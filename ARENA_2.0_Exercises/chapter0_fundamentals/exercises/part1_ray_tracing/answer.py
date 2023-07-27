@@ -227,18 +227,267 @@ def make_rays_2d(num_pixels_y: int, num_pixels_z: int, y_limit: float, z_limit: 
     '''
     rays_y = torch.zeros((num_pixels_y,  2, 3), dtype=torch.float32)
     rays_y[:, 1, 0] = 1
+    rays_y[:, 1, 2] = 1
     rays_y[:, 1, 1] = torch.linspace(-y_limit, y_limit, steps = num_pixels_y)
+    rays_y = einops.repeat(rays_y, 'n p a -> (n 10) p a')
 
     rays_z = torch.zeros((num_pixels_z,  2, 3), dtype=torch.float32)
     rays_z[:, 1, 0] = 1
+    rays_z[:, 1, 1] = 1
     rays_z[:, 1, 2] = torch.linspace(-z_limit, z_limit, steps = num_pixels_z)
+    rays_z = einops.repeat(rays_z, 'n p a -> (10 n) p a')
 
-    rays = einops.einsum(rays_y, rays_z, 'n a b, n a b -> x y a b')
-    rays = einops.rearrange(rays, 'x y a b -> (x y) a b')
-    return rays
+    rays = einops.einsum(rays_y, rays_z, 'n a b, n a b -> n a b')
+
+    ## second ways to build it from empty
+    n_pixels = num_pixels_y * num_pixels_z
+    ygrid = torch.linspace(-y_limit, y_limit, steps = num_pixels_y)
+    zgrid = torch.linspace(-z_limit, z_limit, steps = num_pixels_z)
+    rays2 = torch.zeros((n_pixels, 2, 3), dtype=torch.float32)
+    rays2[:, 1, 0] = 1
+    rays2[:, 1, 1] = einops.repeat(ygrid, 'z -> (z n)', n = num_pixels_y)
+    rays2[:, 1, 2] = einops.repeat(zgrid, 'z -> (n z)', n = num_pixels_z)
+
+
+    return rays2
 
 
 if MAIN:
     rays_2d = make_rays_2d(10, 10, 0.3, 0.3)
     render_lines_with_plotly(rays_2d)
+# %%
+
+a = torch.tensor([1,2,3])
+print(einops.repeat(a, 'b -> (b 5)')) #[[1,1,1,1,1],[2,2,2,2,2],[3,3,3,3,3]]
+print(einops.repeat(a, 'b -> (5 b)')) # [[1,2,3],[1,2,3],[1,2,3],[1,2,3],[1,2,3]]
+# %%
+if MAIN:
+    one_triangle = t.tensor([[0, 0, 0], [3, 0.5, 0], [2, 3, 0]])
+    A, B, C = one_triangle
+    x, y, z = one_triangle.T
+
+    fig = setup_widget_fig_triangle(x, y, z)
+
+@interact(u=(-0.5, 1.5, 0.01), v=(-0.5, 1.5, 0.01))
+def response(u=0.0, v=0.0):
+    P = A + u * (B - A) + v * (C - A)
+    fig.data[2].update({"x": [P[0]], "y": [P[1]]})
+
+
+if MAIN:
+    display(fig)
+
+# %%
+Point = Float[Tensor, "points=3"]
+
+@jaxtyped
+@typeguard.typechecked
+def triangle_ray_intersects(A: Point, B: Point, C: Point, O: Point, D: Point) -> bool:
+    '''
+    A: shape (3,), one vertex of the triangle
+    B: shape (3,), second vertex of the triangle
+    C: shape (3,), third vertex of the triangle
+    O: shape (3,), origin point
+    D: shape (3,), direction point
+
+    Return True if the ray and the triangle intersect.
+    '''
+    BA = B - A
+    CA = C - A
+    OA = O - A
+
+    mat = torch.stack([-D, BA, CA], dim=-1)
+    b = OA
+    try:
+        sol = torch.linalg.solve(mat, b)
+    except:
+        return False
+
+    w, u, v = sol 
+    return ((u >= 0) & (v >= 0) & (u + v <= 1)).item()
+
+
+if MAIN:
+    tests.test_triangle_ray_intersects(triangle_ray_intersects)
+# %%
+
+x = t.zeros(5*5)
+y = x[0]
+print(x._base.data_ptr())
+del x
+print(y)
+print(y._base.data_ptr())
+
+# %%
+def raytrace_triangle(
+    rays: Float[Tensor, "nrays rayPoints=2 dims=3"],
+    triangle: Float[Tensor, "trianglePoints=3 dims=3"]
+) -> Bool[Tensor, "nrays"]:
+    '''
+    For each ray, return True if the triangle intersects that ray.
+    '''
+
+    NR = rays.size(0)
+
+    # Repeat rays and segments so that we can compuate the intersection of every (ray, segment) pair
+    triangles = einops.repeat(triangle, "p d -> nrays p d", nrays=NR)
+
+    # Each element of `rays` is [[Ox, Oy, Oz], [Dx, Dy, Dz]]
+    O = rays[:, 0] # (nrays, 3)
+    D = rays[:, 1] # (nrays, 3)
+    assert O.shape == (NR, 3)
+    assert D.shape == (NR, 3)
+
+    # Each point A, B, C
+    A = triangles[:, 0]
+    B = triangles[:, 1]
+    C = triangles[:, 2]
+
+    assert A.shape == (NR, 3)
+    assert B.shape == (NR, 3)
+    assert C.shape == (NR, 3)
+
+    # Define matrix on left hand side of equation
+    mat = t.stack([-D, B - A , C-A], dim=-1)
+    # Get boolean of where matrix is singular, and replace it with the identity in these positions
+    dets = t.linalg.det(mat) # (NR,)
+    is_singular = dets.abs() < 1e-8 #(NR,)
+    assert is_singular.shape == (NR,)
+    mat[is_singular] = t.eye(3)
+
+    # Define vector on the right hand side of equation
+    vec = O - A
+
+    # Solve equation, get results
+    sol = t.linalg.solve(mat, vec) #(NR, 3)
+    s = sol[..., 0] #(NR,)
+    u = sol[..., 1]
+    v = sol[..., 2]
+
+    # Return boolean of (matrix is nonsingular, and solution is in correct range implying intersection)
+    return ((u >= 0) & (v >= 0) & (u + v <= 1) & ~is_singular)
+
+
+if MAIN:
+    A = t.tensor([1, 0.0, -0.5])
+    B = t.tensor([1, -0.5, 0.0])
+    C = t.tensor([1, 0.5, 0.5])
+    num_pixels_y = num_pixels_z = 15
+    y_limit = z_limit = 0.5
+
+    # Plot triangle & rays
+    test_triangle = t.stack([A, B, C], dim=0)
+    rays2d = make_rays_2d(num_pixels_y, num_pixels_z, y_limit, z_limit)
+    triangle_lines = t.stack([A, B, C, A, B, C], dim=0).reshape(-1, 2, 3)
+    render_lines_with_plotly(rays2d, triangle_lines)
+
+    # Calculate and display intersections
+    intersects = raytrace_triangle(rays2d, test_triangle)
+    print(intersects)
+    img = intersects.reshape(num_pixels_y, num_pixels_z).int()
+    imshow(img, origin="lower", width=600, title="Triangle (as intersected by rays)")
+
+
+# %%
+def raytrace_triangle_with_bug(
+    rays: Float[Tensor, "nrays rayPoints=2 dims=3"],
+    triangle: Float[Tensor, "trianglePoints=3 dims=3"]
+) -> Bool[Tensor, "nrays"]:
+    '''
+    For each ray, return True if the triangle intersects that ray.
+    '''
+    NR = rays.size(0)
+
+    A, B, C = einops.repeat(triangle, "pts dims -> pts NR dims", NR=NR)
+
+    O, D = rays.unbind(1)
+
+    mat = t.stack([- D, B - A, C - A], dim=-1)
+
+    dets = t.linalg.det(mat)
+    is_singular = dets.abs() < 1e-8
+    mat[is_singular] = t.eye(3)
+
+    vec = O - A
+
+    sol = t.linalg.solve(mat, vec)
+    s, u, v = sol.unbind(dim=-1)
+
+    return ((u >= 0) & (v >= 0) & (u + v <= 1) & ~is_singular)
+
+
+intersects = raytrace_triangle_with_bug(rays2d, test_triangle)
+img = intersects.reshape(num_pixels_y, num_pixels_z).int()
+imshow(img, origin="lower", width=600, title="Triangle (as intersected by rays)")
+# %%
+if MAIN:
+    with open(section_dir / "pikachu.pt", "rb") as f:
+        triangles = t.load(f)
+# %%
+
+def raytrace_mesh(
+    rays: Float[Tensor, "nrays rayPoints=2 dims=3"],
+    triangles: Float[Tensor, "ntriangles trianglePoints=3 dims=3"]
+) -> Float[Tensor, "nrays"]:
+    '''
+    For each ray, return the distance to the closest intersecting triangle, or infinity.
+    '''
+    
+    NR = rays.size(0)
+    NT = triangles.size(0)
+
+    rays = einops.repeat(rays, 'nrays p d -> nrays nt p d', nt = NT)
+    triangles = einops.repeat(triangles, 'ntriangles p d -> nr ntriangles p d', nr = NR)
+
+    assert rays.shape == (NR, NT, 2, 3)
+    assert triangles.shape == (NR, NT, 3, 3)
+
+    O, D = rays.unbind(dim = 2)
+    assert O.shape == (NR, NT, 3)
+
+    A, B, C = triangles.unbind(dim = 2)
+    assert A.shape == (NR, NT, 3)
+
+    mat = torch.stack([-D, B-A, C-A], dim=-1)
+    assert mat.shape == (NR, NT, 3, 3)
+
+    vec = O-A
+
+    det = torch.det(mat) # shape (NR, NT)
+    singular = abs(det) < 1e-8
+    mat[singular] = torch.eye(3)
+
+    sol = torch.linalg.solve(mat, vec) # (NR, NT, 3)
+    s,u,v = sol.unbind(dim=-1)
+    # Find distance
+    dist = torch.sqrt(torch.sum(torch.square(sol), dim=-1))
+    # Replace is singular with torch.inf
+    valid_mask = ((u >= 0) & (v >= 0) & (u +v <= 1) & (~singular))
+    s[~valid_mask] = torch.inf
+
+    #return einops.reduce(s, 'nr nt -> nr', 'min')
+    return s.min(dim=-1).values
+
+
+if MAIN:
+    num_pixels_y = 120
+    num_pixels_z = 120
+    y_limit = z_limit = 1
+
+    rays = make_rays_2d(num_pixels_y, num_pixels_z, y_limit, z_limit)
+    rays[:, 0] = t.tensor([-2, 0.0, 0.0])
+    dists = raytrace_mesh(rays, triangles)
+    intersects = t.isfinite(dists).view(num_pixels_y, num_pixels_z)
+    dists_square = dists.view(num_pixels_y, num_pixels_z)
+    img = t.stack([intersects, dists_square], dim=0)
+
+    fig = px.imshow(img, facet_col=0, origin="lower", color_continuous_scale="magma", width=1000)
+    fig.update_layout(coloraxis_showscale=False)
+    for i, text in enumerate(["Intersects", "Distance"]): 
+        fig.layout.annotations[i]['text'] = text
+    fig.show()
+# %%
+a = torch.rand(3)
+print(a.min(-1))
+print(a.min(-1).values)
 # %%
