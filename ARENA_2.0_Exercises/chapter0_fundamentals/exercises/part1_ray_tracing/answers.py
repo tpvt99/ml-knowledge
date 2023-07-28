@@ -311,12 +311,7 @@ if MAIN:
     tests.test_triangle_ray_intersects(triangle_ray_intersects)
 # %%
 
-x = t.zeros(5*5)
-y = x[0]
-print(x._base.data_ptr())
-del x
-print(y)
-print(y._base.data_ptr())
+
 
 # %%
 def raytrace_triangle(
