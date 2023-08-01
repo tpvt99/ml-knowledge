@@ -177,15 +177,6 @@ for i in range(3):
 
 torch.tensor(0)
 # %%
-torch_out.mean()
-# %%
-my_out.mean()
-# %%
-a = torch.rand(3,2,2)
-b = torch.rand(3,1,1)
-einops.einsum(a, b, 'c h w, c x y -> c (h x) (w y)')
-
-# %%
 class AveragePool(nn.Module):
     def forward(self, x: t.Tensor) -> t.Tensor:
         '''
@@ -227,6 +218,7 @@ class ResidualBlock(nn.Module):
         # thus in main branch, we use stride=first_strde to reduce the height and width
         # and the same time, we add skip_branch with stride=first_stride to also reduce height and width
         # we keep kernel = 3, padding = 1 in both stride=1 and stride > 1
+
         
         self.main_branch = Sequential(
             Conv2d(in_channels=in_feats, out_channels=out_feats, kernel_size=3, stride=first_stride,
@@ -246,6 +238,7 @@ class ResidualBlock(nn.Module):
                 BatchNorm2d(num_features=out_feats)
             )
 
+
         self.relu = ReLU()
 
     def forward(self, x: Float[Tensor, "batch c h w"]) -> t.Tensor:
@@ -258,9 +251,12 @@ class ResidualBlock(nn.Module):
 
         If no downsampling block is present, the addition should just add the left branch's output to the input.
         '''
-        residual = self.main_branch(x)
 
-        residual = residual + self.skip_branch(x)
+        #residual = self.main_branch(x)
+        #residual = residual + self.skip_branch(x)
+
+        residual = self.skip_branch(x)
+        residual = residual + self.main_branch(x)
 
         output = self.relu(residual)
 
@@ -389,11 +385,23 @@ def copy_weights(my_resnet : ResNet34, pretrained_resnet: models.resnet34) -> mo
     '''
         Copy over the weights of `pretrained_resnet` to your resnet
     '''
-    pass
+    mydict = my_resnet.state_dict()
+    pretraineddict = pretrained_resnet.state_dict()
+    assert len(mydict) == len(pretraineddict), "Missing state dictionaries"
 
-pretrained_resnet = models.resnet34(weights = models.ResNet34_Weights)
+    # Define a dictionary mapping the names of your parameters/buffer to their values in pretrained model
+    state_dict_to_load = {
+        mykey: pretrainedvalue for (mykey, myvalue), (pretrainedkey, pretrainedvalue) in zip(mydict.items(), pretraineddict.items())
+    }
+
+    # Load in this dictionary to your model
+    my_resnet.load_state_dict(state_dict_to_load)
+
+    return my_resnet
+
+pretrained_resnet = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1)
+my_resnet = copy_weights(my_resnet, pretrained_resnet)
  #%%
-
 summary(my_resnet, input_data = torch.rand(2, 3, 224, 224), verbose=0, depth=10)
  
 # %%
@@ -401,6 +409,125 @@ summary(pretrained_resnet, input_data = torch.rand(2,3,224,224))
 # %%
 for param in my_resnet.state_dict():
     print(param, "\t", my_resnet.state_dict()[param].size())
-    print(param)
 
+# %%
+for name, param in my_resnet.named_parameters():
+    print(name)
+# %%
+print_param_count(my_resnet, pretrained_resnet)
+
+
+# %%
+IMAGE_FILENAMES = [
+    "chimpanzee.jpg",
+    "golden_retriever.jpg",
+    "platypus.jpg",
+    "frogs.jpg",
+    "fireworks.jpg",
+    "astronaut.jpg",
+    "iguana.jpg",
+    "volcano.jpg",
+    "goofy.jpg",
+    "dragonfly.jpg",
+]
+
+IMAGE_FOLDER = section_dir / "resnet_inputs"
+
+images = [Image.open(IMAGE_FOLDER / filename) for filename in IMAGE_FILENAMES]
+
+IMAGE_SIZE = 224
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+
+IMAGENET_TRANSFORM = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+    transforms.Normalize(mean = IMAGENET_MEAN, std=IMAGENET_STD)
+])
+# %%
+def prepare_data(images: List[Image.Image]) -> t.Tensor:
+    '''
+        Return: shape (batch = len(images), num_channels = 3, height = 224, weidth = 224)
+    '''
+    transform_tensors = []
+    for image in images:
+        tensor = IMAGENET_TRANSFORM(image)
+        transform_tensors.append(tensor)
+
+    output = torch.stack(transform_tensors, dim=0)
+    return output
+
+prepared_images = prepare_data(images)
+
+assert prepared_images.shape == (len(images), 3, IMAGE_SIZE, IMAGE_SIZE)
+# %%
+with open(section_dir / "imagenet_labels.json") as f:
+    imagenet_labels = list(json.load(f).values())
+
+# Check predictions match the pretrained model's
+my_predictions = my_resnet(prepared_images).argmax(dim=-1)
+pretrained_predictions = pretrained_resnet(prepared_images).argmax(dim=-1)
+
+assert all(my_predictions == pretrained_predictions)
+
+for img, label in zip(images, my_predictions):
+    print(f"Predicted label: {label}, name {imagenet_labels[label]}")
+    display(img)
+    print()
+
+
+
+# %%
+class NanModule(nn.Module):
+    '''
+    Define a module that always returns NaNs (we will use hooks to identify this error).
+    '''
+    def forward(self, x):
+        return t.full_like(x, float('nan'))
+
+
+model = nn.Sequential(
+    nn.Identity(),
+    NanModule(),
+    nn.Identity()
+)
+
+
+def hook_check_for_nan_output(module: nn.Module, input: Tuple[t.Tensor], output: t.Tensor) -> None:
+    '''
+    Hook function which detects when the output of a layer is NaN.
+    '''
+    if t.isnan(output).any():
+        raise ValueError(f"NaN output from {module}")
+
+
+def add_hook(module: nn.Module) -> None:
+    '''
+    Register our hook function in a module.
+
+    Use model.apply(add_hook) to recursively apply the hook to model and all submodules.
+    '''
+    module.register_forward_hook(hook_check_for_nan_output)
+
+
+def remove_hooks(module: nn.Module) -> None:
+    '''
+    Remove all hooks from module.
+
+    Use module.apply(remove_hooks) to do this recursively.
+    '''
+    module._backward_hooks.clear()
+    module._forward_hooks.clear()
+    module._forward_pre_hooks.clear()
+
+
+model = model.apply(add_hook)
+input = t.randn(3)
+
+try:
+    output = model(input)
+except ValueError as e:
+    print(e)
+
+model = model.apply(remove_hooks)
 # %%
