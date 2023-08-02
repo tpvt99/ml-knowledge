@@ -38,7 +38,9 @@ import part3_resnets.tests as tests
 from plotly_utils import line, plot_train_loss_and_test_accuracy_from_trainer
 from torchinfo import summary
 
-device = t.device('cuda' if t.cuda.is_available() else 'cpu')
+device = torch.device(f"cuda:{t.cuda.current_device()}")  \
+    if t.cuda.is_available() else torch.device('cpu')
+
 print(device)
 
 MAIN = __name__ == "__main__"
@@ -159,23 +161,23 @@ tests.test_batchnorm2d_running_mean(BatchNorm2d)
 
 # %%
 # my own testing
-torch_batchnorm = nn.BatchNorm2d(num_features = 10)
-my_batchnorm = BatchNorm2d(num_features=10)
-for i in range(3):
-    inputs = torch.rand(size=(8, 10, 6, 6)) # b, c, h, w
-    torch_out = torch_batchnorm(inputs)
-    my_out = my_batchnorm(inputs)
-    
-    #assert torch.allclose(torch_batchnorm.running_var, my_batchnorm.running_var)
-    assert torch.allclose(torch_batchnorm.running_mean, my_batchnorm.running_mean)
-    assert torch.allclose(torch_batchnorm.num_batches_tracked, my_batchnorm.num_batches_tracked)
-    assert torch.allclose(torch_batchnorm.weight, my_batchnorm.weight)
-    assert torch.allclose(torch_batchnorm.bias, my_batchnorm.bias)
-    assert torch.allclose(torch_out, my_out)
+if MAIN:
+    torch_batchnorm = nn.BatchNorm2d(num_features = 10)
+    my_batchnorm = BatchNorm2d(num_features=10)
+    for i in range(3):
+        inputs = torch.rand(size=(8, 10, 6, 6)) # b, c, h, w
+        torch_out = torch_batchnorm(inputs)
+        my_out = my_batchnorm(inputs)
+        
+        #assert torch.allclose(torch_batchnorm.running_var, my_batchnorm.running_var)
+        assert torch.allclose(torch_batchnorm.running_mean, my_batchnorm.running_mean)
+        assert torch.allclose(torch_batchnorm.num_batches_tracked, my_batchnorm.num_batches_tracked)
+        assert torch.allclose(torch_batchnorm.weight, my_batchnorm.weight)
+        assert torch.allclose(torch_batchnorm.bias, my_batchnorm.bias)
+        assert torch.allclose(torch_out, my_out)
 
-    print (f"Done {i}")
+        print (f"Done {i}")
 
-torch.tensor(0)
 # %%
 class AveragePool(nn.Module):
     def forward(self, x: t.Tensor) -> t.Tensor:
@@ -399,23 +401,28 @@ def copy_weights(my_resnet : ResNet34, pretrained_resnet: models.resnet34) -> mo
 
     return my_resnet
 
-pretrained_resnet = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1)
-my_resnet = copy_weights(my_resnet, pretrained_resnet)
+if MAIN:
+    pretrained_resnet = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1)
+    my_resnet = copy_weights(my_resnet, pretrained_resnet)
  #%%
-summary(my_resnet, input_data = torch.rand(2, 3, 224, 224), verbose=0, depth=10)
+if MAIN:
+    summary(my_resnet, input_data = torch.rand(2, 3, 224, 224), verbose=0, depth=10)
  
 # %%
-summary(pretrained_resnet, input_data = torch.rand(2,3,224,224))
+if MAIN:
+    summary(pretrained_resnet, input_data = torch.rand(2,3,224,224))
 # %%
-for param in my_resnet.state_dict():
-    print(param, "\t", my_resnet.state_dict()[param].size())
+if MAIN:
+    for param in my_resnet.state_dict():
+        print(param, "\t", my_resnet.state_dict()[param].size())
 
 # %%
-for name, param in my_resnet.named_parameters():
-    print(name)
+if MAIN:
+    for name, param in my_resnet.named_parameters():
+        print(name)
 # %%
-print_param_count(my_resnet, pretrained_resnet)
-
+if MAIN:
+    print_param_count(my_resnet, pretrained_resnet)
 
 # %%
 IMAGE_FILENAMES = [
@@ -457,23 +464,23 @@ def prepare_data(images: List[Image.Image]) -> t.Tensor:
     output = torch.stack(transform_tensors, dim=0)
     return output
 
-prepared_images = prepare_data(images)
+if MAIN:
+    prepared_images = prepare_data(images)
 
-assert prepared_images.shape == (len(images), 3, IMAGE_SIZE, IMAGE_SIZE)
-# %%
-with open(section_dir / "imagenet_labels.json") as f:
-    imagenet_labels = list(json.load(f).values())
+    assert prepared_images.shape == (len(images), 3, IMAGE_SIZE, IMAGE_SIZE)
+    with open(section_dir / "imagenet_labels.json") as f:
+        imagenet_labels = list(json.load(f).values())
 
-# Check predictions match the pretrained model's
-my_predictions = my_resnet(prepared_images).argmax(dim=-1)
-pretrained_predictions = pretrained_resnet(prepared_images).argmax(dim=-1)
+    # Check predictions match the pretrained model's
+    my_predictions = my_resnet(prepared_images).argmax(dim=-1)
+    pretrained_predictions = pretrained_resnet(prepared_images).argmax(dim=-1)
 
-assert all(my_predictions == pretrained_predictions)
+    assert all(my_predictions == pretrained_predictions)
 
-for img, label in zip(images, my_predictions):
-    print(f"Predicted label: {label}, name {imagenet_labels[label]}")
-    display(img)
-    print()
+    for img, label in zip(images, my_predictions):
+        print(f"Predicted label: {label}, name {imagenet_labels[label]}")
+        display(img)
+        print()
 
 
 
@@ -520,14 +527,14 @@ def remove_hooks(module: nn.Module) -> None:
     module._forward_hooks.clear()
     module._forward_pre_hooks.clear()
 
+if MAIN:
+    model = model.apply(add_hook)
+    input = t.randn(3)
 
-model = model.apply(add_hook)
-input = t.randn(3)
+    try:
+        output = model(input)
+    except ValueError as e:
+        print(e)
 
-try:
-    output = model(input)
-except ValueError as e:
-    print(e)
-
-model = model.apply(remove_hooks)
+    model = model.apply(remove_hooks)
 # %%
