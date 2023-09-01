@@ -129,8 +129,9 @@ class LayerNorm(nn.Module):
 
         return output
 
-rand_float_test(LayerNorm, [2, 4, 768])
-load_gpt2_test(LayerNorm, reference_gpt2.ln_final, cache["resid_post", 11])
+if MAIN:
+    rand_float_test(LayerNorm, [2, 4, 768])
+    load_gpt2_test(LayerNorm, reference_gpt2.ln_final, cache["resid_post", 11])
 # %%
 class Embed(nn.Module):
     def __init__(self, cfg: Config):
@@ -144,9 +145,10 @@ class Embed(nn.Module):
         output = self.W_E[tokens]
 
         return output
-    
-rand_int_test(Embed, [2, 4])
-load_gpt2_test(Embed, reference_gpt2.embed, tokens)    
+
+if MAIN: 
+    rand_int_test(Embed, [2, 4])
+    load_gpt2_test(Embed, reference_gpt2.embed, tokens)    
 # %%
 class PosEmbed(nn.Module):
     def __init__(self, cfg: Config):
@@ -172,9 +174,9 @@ class PosEmbed(nn.Module):
         assert t.allclose(output, output2)
         assert t.allclose(output, output3)
         return output2
-
-rand_int_test(PosEmbed, [2, 4])
-load_gpt2_test(PosEmbed, reference_gpt2.pos_embed, tokens)
+if MAIN:
+    rand_int_test(PosEmbed, [2, 4])
+    load_gpt2_test(PosEmbed, reference_gpt2.pos_embed, tokens)
 # %%
 class Attention(nn.Module):
     IGNORE: Float[Tensor, ""]
@@ -259,9 +261,9 @@ class Attention(nn.Module):
         assert t.allclose(scores, attention_scores)
 
         return attention_scores
-
-rand_float_test(Attention, [2, 4, 768])
-load_gpt2_test(Attention, reference_gpt2.blocks[0].attn, cache["normalized", 0, "ln1"])
+if MAIN:
+    rand_float_test(Attention, [2, 4, 768])
+    load_gpt2_test(Attention, reference_gpt2.blocks[0].attn, cache["normalized", 0, "ln1"])
 
 # %%
 class MLP(nn.Module):
@@ -286,8 +288,9 @@ class MLP(nn.Module):
                             "batch pos d_mlp, d_mlp d_model -> batch pos d_model") + self.b_out
         return out
 
-rand_float_test(MLP, [2, 4, 768])
-load_gpt2_test(MLP, reference_gpt2.blocks[0].mlp, cache["normalized", 0, "ln2"])
+if MAIN:
+    rand_float_test(MLP, [2, 4, 768])
+    load_gpt2_test(MLP, reference_gpt2.blocks[0].mlp, cache["normalized", 0, "ln2"])
 # %%
 class TransformerBlock(nn.Module):
     def __init__(self, cfg: Config):
@@ -318,9 +321,9 @@ class TransformerBlock(nn.Module):
 
         return resid_post
 
-
-rand_float_test(TransformerBlock, [2, 4, 768])
-load_gpt2_test(TransformerBlock, reference_gpt2.blocks[0], cache["resid_pre", 0])
+if MAIN:
+    rand_float_test(TransformerBlock, [2, 4, 768])
+    load_gpt2_test(TransformerBlock, reference_gpt2.blocks[0], cache["resid_pre", 0])
 # %%
 class Unembed(nn.Module):
     def __init__(self, cfg):
@@ -334,9 +337,10 @@ class Unembed(nn.Module):
                     ) -> Float[Tensor, "batch pos d_vocab"]:
         return einops.einsum(normalized_resid_final, self.W_U, 
                              "batch pos d_model, d_model d_vocab -> batch pos d_vocab") + self.b_U
-    
-rand_float_test(Unembed, [2, 4, 768])
-load_gpt2_test(Unembed, reference_gpt2.unembed, cache["ln_final.hook_normalized"])
+
+if MAIN: 
+    rand_float_test(Unembed, [2, 4, 768])
+    load_gpt2_test(Unembed, reference_gpt2.unembed, cache["ln_final.hook_normalized"])
 # %%
 class DemoTransformer(nn.Module):
     def __init__(self, cfg:Config):
@@ -361,8 +365,9 @@ class DemoTransformer(nn.Module):
 
         return logits
 
-rand_int_test(DemoTransformer, [2, 4])
-load_gpt2_test(DemoTransformer, reference_gpt2, tokens)
+if MAIN:
+    rand_int_test(DemoTransformer, [2, 4])
+    load_gpt2_test(DemoTransformer, reference_gpt2, tokens)
 # %%
 demo_gpt2 = DemoTransformer(Config(debug=False)).to(device)
 demo_gpt2.load_state_dict(reference_gpt2.state_dict(), strict=False)
@@ -409,20 +414,21 @@ class TransformerTrainingArgs():
 args = TransformerTrainingArgs()
 
 ## Creating data
-dataset = datasets.load_dataset("NeelNanda/pile-10k", split="train").remove_columns("meta")
-print(dataset)
-print(dataset[0]['text'][:100])
-### Tokenized
-tokenized_dataset = tokenize_and_concatenate(dataset, reference_gpt2.tokenizer, streaming=False,
-                                             max_length = model.cfg.n_ctx, column_name="text",
-                                             add_bos_token=True, num_proc=4)
-dataset_dict = tokenized_dataset.train_test_split(test_size=1000)
-train_loader = DataLoader(dataset_dict["train"],
-                          batch_size=args.batch_size, shuffle=True, num_workers=4,
-                          pin_memory=True)
-test_loader = DataLoader(dataset_dict["test"],
-                         batch_size=args.batch_size, shuffle=False, num_workers=4,
-                         pin_memory=True)
+if MAIN:
+    dataset = datasets.load_dataset("NeelNanda/pile-10k", split="train").remove_columns("meta")
+    print(dataset)
+    print(dataset[0]['text'][:100])
+    ### Tokenized
+    tokenized_dataset = tokenize_and_concatenate(dataset, reference_gpt2.tokenizer, streaming=False,
+                                                max_length = model.cfg.n_ctx, column_name="text",
+                                                add_bos_token=True, num_proc=4)
+    dataset_dict = tokenized_dataset.train_test_split(test_size=1000)
+    train_loader = DataLoader(dataset_dict["train"],
+                            batch_size=args.batch_size, shuffle=True, num_workers=4,
+                            pin_memory=True)
+    test_loader = DataLoader(dataset_dict["test"],
+                            batch_size=args.batch_size, shuffle=False, num_workers=4,
+                            pin_memory=True)
 
 # %%
 class TransformerTrainer:
@@ -580,9 +586,10 @@ class TransformerTrainer:
                           shuffle = False, num_workers=4, pin_memory=True)
 
 # %%
-args = TransformerTrainingArgs()
-model = DemoTransformer(cfg=model_cfg).to(device)
-trainer = TransformerTrainer(args, model)
-trainer.train()
+if MAIN:
+    args = TransformerTrainingArgs()
+    model = DemoTransformer(cfg=model_cfg).to(device)
+    trainer = TransformerTrainer(args, model)
+    trainer.train()
 
 # %%
