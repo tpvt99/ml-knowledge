@@ -4,3 +4,6 @@
 [submodule "ARENA_2.0"]
 	path = ARENA_2.0
 	url = https://github.com/callummcdougall/ARENA_2.0.git
+[submodule "ARENA_3.0"]
+	path = ARENA_3.0
+	url = https://github.com/callummcdougall/ARENA_3.0
