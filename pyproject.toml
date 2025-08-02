@@ -1,0 +1,21 @@
+[project]
+name = "ml-knowledge"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "chalk-diagrams",
+    "hypothesis>=6.136.6",
+    "ipykernel>=6.30.0",
+    "matplotlib>=3.10.3",
+    "numpy>=2.3.2",
+    "pytest>=8.4.1",
+    "torch>=2.7.1",
+    "torchaudio>=2.7.1",
+    "torchtyping>=0.1.5",
+    "torchvision>=0.22.1",
+]
+
+[tool.uv.sources]
+chalk-diagrams = { git = "https://github.com/chalk-diagrams/chalk" }
