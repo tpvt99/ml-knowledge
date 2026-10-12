@@ -4,6 +4,11 @@
 
 #### 1. Prerequisite
 
+1/ Einops, Einsum and Tensor Manipulation on the exercises page https://learn.arena.education/chapter0_fundamentals/00_prereqs/2-einops-einsum-tensor-manipulation/
+
+2/ Broadcasting rule: https://learn.arena.education/chapter0_fundamentals/00_prereqs/2-einops-einsum-tensor-manipulation/
+Or another one https://docs.pytorch.org/docs/2.14/notes/broadcasting.html
+
 1/ Study numpy-100 where all exercises are good to know
 
 2/ Study tensor-puzzles to know about tensors
