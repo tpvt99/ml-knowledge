@@ -9,6 +9,9 @@
 2/ Broadcasting rule: https://learn.arena.education/chapter0_fundamentals/00_prereqs/2-einops-einsum-tensor-manipulation/
 Or another one https://docs.pytorch.org/docs/2.14/notes/broadcasting.html
 
+3/ I like torch.gather, also knowing log sum exp trick for log softmax.
+
+
 1/ Study numpy-100 where all exercises are good to know
 
 2/ Study tensor-puzzles to know about tensors
