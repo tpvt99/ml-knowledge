@@ -201,14 +201,183 @@ def classifier_accuracy(scores: Tensor, true_classes: Tensor) -> Tensor:
 
     Use t.argmax.
     """
-    return t.mean(t.argmax(scores, dim=-1) == true_classes)
+    return (t.argmax(scores, dim=-1) == true_classes).float().mean()
 
 tests.test_classifier_accuracy(classifier_accuracy)
-# %%
-x = t.rand(4)
-print(x)
-probs = t.tensor([0.1, 0.3, 0.6])
-t.cumsum(probs, dim=0)
-x.reshape(-1, 1) > t.cumsum(probs, dim=0).reshape(1,3)
+
+def total_price_indexing(prices: Tensor, items: Tensor) -> float:
+    """Given prices for each kind of item and a tensor of items purchased, return the total price.
+
+    prices: shape (k, ). prices[i] is the price of the ith item.
+    items: shape (n, ). A 1D tensor where each value is an item index from [0..k).
+
+    Use integer array indexing. The below document describes this for NumPy but it's the same in PyTorch:
+
+    https://numpy.org/doc/stable/user/basics.indexing.html#integer-array-indexing
+    """
+    assert items.max() < len(prices)
+    return prices[items].sum().item()
+
+tests.test_total_price_indexing(total_price_indexing)
+
+def gather_2d(matrix: Tensor, indexes: Tensor) -> Tensor:
+    """Perform a gather operation along the second dimension.
+
+    matrix: shape (m, n)
+    indexes: shape (m, k)
+
+    Return: shape (m, k). out[i][j] = matrix[i][indexes[i][j]]
+
+    For this problem, the test already passes and it's your job to write at least three asserts relating the arguments and the output. This is a tricky function and worth spending some time to wrap your head around its behavior.
+
+    See: https://pytorch.org/docs/stable/generated/torch.gather.html?highlight=gather#torch.gather
+    """
+    ## COde here - add assert statements here for `indices` and `matrix`
+    #assert indexes.dim() == matrix.dim()
+    assert indexes.ndim == matrix.ndim
+    assert indexes.size(0) <= matrix.size(0)
+
+    out = matrix.gather(1, indexes)
+    # Code here - add assert statements here for `out`
+    assert out.shape == indexes.shape
+
+    return out
+
+tests.test_gather_2d(gather_2d)
+
+def total_price_gather(prices: Tensor, items: Tensor) -> float:
+    """Compute the same as total_price_indexing, but use torch.gather"""
+    assert items.max() < prices.shape[0]
+    #return prices.gather(0, items).sum().item() # This pass
+    return t.gather(prices, dim=0, index=items).sum().item()
+
+tests.test_total_price_gather(total_price_gather)
+
+def integer_array_indexing(matrix: Tensor, coords: Tensor) -> Tensor:
+    """Return the values at each coordinate using integer array indexing.
+
+    For details on integer array indexing, see:
+    https://numpy.org/doc/stable/user/basics.indexing.html#integer-array-indexing
+
+    matrix: shape (d_0, d_1, ..., d_n)
+    coords: shape (batch, n)
+
+    Return: (batch, )
+    """
+    return matrix[tuple(coords.T)]
+
+tests.test_integer_array_indexing(integer_array_indexing)
+
+def batched_logsumexp(matrix: Tensor) -> Tensor:
+    """For each row of the matrix, compute log(sum(exp(row))) in a numerically stable way.
+
+    matrix: shape (batch, n)
+
+    Return: (batch, ). For each i, out[i] = log(sum(exp(matrix[i]))).
+
+    Do this without using PyTorch's logsumexp function.
+
+    A couple useful blogs about this function:
+    - https://leimao.github.io/blog/LogSumExp/
+    - https://gregorygundersen.com/blog/2020/02/09/log-sum-exp/
+    """
+    #return (matrix - matrix.max(dim=-1).values[:, None]).exp().sum(dim=1).log() + matrix.max(dim=-1).values # passed one
+    C = matrix.max(dim=-1).values
+    exp = t.exp(matrix - einops.rearrange(C, "a -> a 1"))
+    sum_exp = t.sum(exp, dim=-1)
+    log_exp = t.log(sum_exp)
+    return C + log_exp
+
+tests.test_batched_logsumexp(batched_logsumexp)
+
+def batched_softmax(matrix: Tensor) -> Tensor:
+    """For each row of the matrix, compute softmax(row).
+
+    Do this without using PyTorch's softmax function.
+    Instead, use the definition of softmax: https://en.wikipedia.org/wiki/Softmax_function
+
+    matrix: shape (batch, n)
+
+    Return: (batch, n). For each i, out[i] should sum to 1.
+    """
+    # wait what if i use directly exp should be exponentially large/small?
+    # this somehow passed
+    ### HAHA okie according to solution, this is the solution cuz it does not care exp stability now
+    sum_exp = matrix.exp().sum(dim=-1)
+    return matrix.exp() / einops.rearrange(sum_exp, "a -> a 1")
+
+    # how about using the logsumexp? it works
+    #logsumexp = batched_logsumexp(matrix)
+    #return (matrix - einops.rearrange(logsumexp, "a -> a 1")).exp()
+
+    # somehow Wikipedia just saying to use the max value for each row? let's try
+    # okie it works
+    C = matrix.max(dim=-1).values
+    sum_exp = (matrix - einops.rearrange(C, "t -> t 1")).exp().sum(dim=-1)
+    return (matrix - einops.rearrange(C, "t -> t 1")).exp() / einops.rearrange(sum_exp, "t -> t 1")
+
+tests.test_batched_softmax(batched_softmax)
+
+def batched_logsoftmax(matrix: Tensor) -> Tensor:
+    """Compute log(softmax(row)) for each row of the matrix.
+
+    matrix: shape (batch, n)
+
+    Return: (batch, n).
+
+    Do this without using PyTorch's logsoftmax function.
+    For each row, subtract the maximum first to avoid overflow if the row contains large values.
+    """
+    # i use this version but not working and it is inf/nan
+    #logsumexp = batched_logsumexp(matrix)
+    #return (matrix - einops.rearrange(logsumexp, "t -> t 1")).exp().log()
+    
+    # this works
+    #logsumexp = batched_logsumexp(matrix)
+    #return matrix - einops.rearrange(logsumexp, "t -> t 1")
+
+    # let's try the max value subtract. but this not work either
+    #max_value = einops.rearrange(matrix.max(dim=-1).values, "t -> t 1")
+    #sum_exp = (matrix - max_value).exp().sum(dim=-1)
+    #softmax = (matrix - max_value).exp() / einops.rearrange(sum_exp, "t -> t 1")
+    #return softmax.log()
+
+    # let's try just the numerical stability. this work
+    max_value = einops.rearrange(matrix.max(dim=-1).values, "t -> t 1")
+    sum_exp = (matrix - max_value).exp().sum(dim=-1)
+    return (matrix - max_value) - einops.rearrange(sum_exp.log(), "t -> t 1")
+
+tests.test_batched_logsoftmax(batched_logsoftmax)
+
+def batched_cross_entropy_loss(logits: Tensor, true_labels: Tensor) -> Tensor:
+    """Compute the cross entropy loss for each example in the batch.
+
+    logits: shape (batch, classes). logits[i][j] is the unnormalized prediction for example i and class j.
+    true_labels: shape (batch, ). true_labels[i] is an integer index representing the true class for example i.
+
+    Return: shape (batch, ). out[i] is the loss for example i.
+
+    Hint: convert the logits to log-probabilities using your batched_logsoftmax from above.
+    Then the loss for an example is just the negative of the log-probability that the model assigned to the true class. Use torch.gather to perform the indexing.
+    """
+    logsoftmax = batched_logsoftmax(logits)
+    return -logsoftmax.gather(dim=1, true_labels[:, None])
+
+tests.test_batched_cross_entropy_loss(batched_cross_entropy_loss)
+
+#%%
+matrix = t.arange(1,16).reshape(5,3)
+print(matrix)
+indices = t.tensor([1,1,1,1,1]).reshape(5,1)
+t.gather(matrix, dim=1, index=indices)
+
+# %% for gathering
+matrix = t.arange(1, 9).reshape(2,4)
+print(matrix)
+print(matrix.shape)
+print(matrix.size())
+#indexes = t.tensor([[1, 1, 1, 1, 1], [1, 0, 0, 0, 1]]) # invalid size cuz gather dim 0 so dim 1 cannot bigger because output's dim 1 get value from matrix' dim 1
+indexes = t.tensor([[1, 1, 1, 1], [1, 0, 0, 0], [0,0,0,0]]) # still valid cuz gather dim 0 so dim 0 can bigger than original matrix size
+matrix.gather(0, indexes)
 
 # %%
