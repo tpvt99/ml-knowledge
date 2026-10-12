@@ -361,7 +361,7 @@ def batched_cross_entropy_loss(logits: Tensor, true_labels: Tensor) -> Tensor:
     Then the loss for an example is just the negative of the log-probability that the model assigned to the true class. Use torch.gather to perform the indexing.
     """
     logsoftmax = batched_logsoftmax(logits)
-    return -logsoftmax.gather(dim=1, true_labels[:, None])
+    return einops.rearrange(-logsoftmax.gather(dim=1, index=true_labels[:, None]), "t 1 -> t")
 
 tests.test_batched_cross_entropy_loss(batched_cross_entropy_loss)
 
