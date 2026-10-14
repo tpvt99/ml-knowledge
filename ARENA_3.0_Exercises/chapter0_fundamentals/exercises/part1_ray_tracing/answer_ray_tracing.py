@@ -30,14 +30,41 @@ from part1_ray_tracing.utils import (
     setup_widget_fig_ray,
     setup_widget_fig_triangle
 )
-#from plotly_utils import imshow
+from plotly_utils import imshow
 
 MAIN = __name__ == "__main__"
 
 #%%
-for p in Path.cwd().parents:
-    print(p)
-    if (p/chapter).exists():
-        print('aaaa')
-        print(p/chapter)
+def make_rays_1d(num_pixels: int, y_limit: float) -> Tensor:
+    """
+    num_pixels: The number of pixels in the y dimension. Since there is one ray per pixel, this is
+        also the number of rays.
+    y_limit: At x=1, the rays should extend from -y_limit to +y_limit, inclusive of both endpoints.
+
+    Returns: shape (num_pixels, num_points=2, num_dim=3) where the num_points dimension contains
+        (origin, direction) and the num_dim dimension contains xyz.
+
+    Example of make_rays_1d(9, 1.0): [
+        [[0, 0, 0], [1, -1.0, 0]],
+        [[0, 0, 0], [1, -0.75, 0]],
+        [[0, 0, 0], [1, -0.5, 0]],
+        ...
+        [[0, 0, 0], [1, 0.75, 0]],
+        [[0, 0, 0], [1, 1, 0]],
+    ]
+    """
+    out = t.zeros(num_pixels, 2, 3).float()
+    out[:, 1, 0] = 1.0
+    out[:, 1, 1] = t.linspace(-y_limit, y_limit, num_pixels)
+    return out
+
+tests.test_make_rays_1d(make_rays_1d)
+rays1d = make_rays_1d(9, 10.0)
+fig = render_lines_with_plotly(rays1d)
+
+
+#%%
+out = t.zeros(3,2,3)
+#t.arange(-1,1,step=9)
+t.linspace(-1,1,9)
 # %%

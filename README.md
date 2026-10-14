@@ -16,7 +16,7 @@ Or another one https://docs.pytorch.org/docs/2.14/notes/broadcasting.html
 
 2/ Study tensor-puzzles to know about tensors
 
-3/ Einsum and einops which are essentials for matrix manipulation
+3/ Einsum and einops which are essentials for matrix manipulation procatination 
 
 #### 2. Modules
 
