@@ -62,9 +62,71 @@ tests.test_make_rays_1d(make_rays_1d)
 rays1d = make_rays_1d(9, 10.0)
 fig = render_lines_with_plotly(rays1d)
 
+#%%
+fig: go.FigureWidget = setup_widget_fig_ray()
+display(fig)
+
+
+@interact(v=(0.0, 6.0, 0.01), seed=(0, 10, 1))
+def update(v=0.0, seed=0):
+    t.manual_seed(seed)
+    L_1, L_2 = t.rand(2, 2)
+    P = lambda v: L_1 + v * (L_2 - L_1)
+    x, y = zip(P(0), P(6))
+    with fig.batch_update():
+        fig.update_traces({"x": x, "y": y}, 0)
+        fig.update_traces({"x": [L_1[0], L_2[0]], "y": [L_1[1], L_2[1]]}, 1)
+        fig.update_traces({"x": [P(v)[0]], "y": [P(v)[1]]}, 2)
 
 #%%
-out = t.zeros(3,2,3)
-#t.arange(-1,1,step=9)
-t.linspace(-1,1,9)
+def intersect_ray_1d(ray: Float[Tensor, "points dim"], segment: Float[Tensor, "points dims"]) -> bool:
+    """
+    ray: shape (n_points=2, n_dim=3)  # O, D points
+    segment: shape (n_points=2, n_dim=3)  # L_1, L_2 points
+
+    Return True if the ray intersects the segment.
+    """
+    A = t.zeros(2, 2, dtype=t.float32)
+    A[:, 0] = ray[1][0:2]
+    A[:, 1] = (segment[0] - segment[1])[0:2]
+    b = (segment[0] - ray[0])[0:2] # it should be (2,)
+
+    sol = t.zeros(2, dtype=t.float32)
+    try:
+        sol = t.linalg.solve(A, b, out = sol) # Can check singular without using .det
+    except RuntimeError:
+        return False
+
+    if sol[0].item() >= 0 and (0 <= sol[1].item() <= 1):
+        return True
+    return False
+
+tests.test_intersect_ray_1d(intersect_ray_1d)
+
+#%%
+def intersect_rays_1d(
+        rays: Float[Tensor, "nrays 2 3"], segments: Float[Tensor, "nsegments 2 3"]
+) -> Bool[Tensor, "nrays"]:
+    """
+    For each ray, return True if it intersects any segment 
+
+    rays: [ray, O, D]
+    segments : [segment, L1, L2]
+    """
+    # Ray [O, D]
+    O, D = rays[:, 0, :], rays[:, 1, :] # [nrays, 3]
+
+    # Segment [L1, L2]
+    L_1, L_2 = segments[:, 0, :], segments[:, 1, :] # [nsegment, 3]
+
+    A = t.stack([D[0:2], (L_1 - L_2)[0:2]], dim=-1) # []
+    b = (L_1 - O)[0:2] # x,y only
+
+#%%
+# Intersection solution is (0,1)
+a = t.randn(10,2)
+b = t.randn(12,2)
+t.stack([a, b], dim=-1).shape
+
+
 # %%
