@@ -113,20 +113,33 @@ def intersect_rays_1d(
     rays: [ray, O, D]
     segments : [segment, L1, L2]
     """
+    nrays = rays.shape[0]
+    nsegments = segments.shape[0]
+
     # Ray [O, D]
-    O, D = rays[:, 0, :], rays[:, 1, :] # [nrays, 3]
+    O, D = rays[:, 0, :][0:2], rays[:, 1, :][0:2] # [nrays, 2]
 
     # Segment [L1, L2]
-    L_1, L_2 = segments[:, 0, :], segments[:, 1, :] # [nsegment, 3]
+    L_1, L_2 = segments[:, 0, :][0:2], segments[:, 1, :][0:2] # [nsegment, 2]
 
-    A = t.stack([D[0:2], (L_1 - L_2)[0:2]], dim=-1) # []
-    b = (L_1 - O)[0:2] # x,y only
+    # I think we need (nrays nsegment 2 2)
+    l1subl2 = L_1 - L_2
+
+    # A got shape [nrays nsegments 2 2]
+    A = t.stack([einops.repeat(D, "nrays 2 -> nrays nsegments 2", nsegment = nsegments), \
+                einops.repeat(l1subl2, "nsegments 2 -> nrays nsegments 2", nrays=nrays)], dim=-1)
+    # b got shape [nrays nsegments 2]
+    b = einops.rearrange(L_1, "nsegment 2 -> 1 nsegment 2") - \
+        einops.rearrange(O, "nrays 2 -> nrays 1 2")
 
 #%%
 # Intersection solution is (0,1)
-a = t.randn(10,2)
-b = t.randn(12,2)
-t.stack([a, b], dim=-1).shape
+#seg = t.tensor([1,2,3,4,5,6,]).reshape(1,3,2)
+#ray = t.tensor([10,11,12,13]).reshape(2,1,2)
+#ray - seg
+
+x = t.tensor([1,2,3,4]).reshape(2,2)
+t.stack([x,x], dim=-1).shape
 
 
 # %%
