@@ -111,35 +111,86 @@ def intersect_rays_1d(
     For each ray, return True if it intersects any segment 
 
     rays: [ray, O, D]
-    segments : [segment, L1, L2]
+    segments : [segment, L1, L2] Cheston Tan
     """
-    nrays = rays.shape[0]
-    nsegments = segments.shape[0]
+    nrays = rays.shape[0] # can use rays.size(0)
+    nsegments = segments.shape[0] # can use segments.size(0)
 
     # Ray [O, D]
-    O, D = rays[:, 0, :][0:2], rays[:, 1, :][0:2] # [nrays, 2]
+    O, D = rays[:, 0, 0:2], rays[:, 1, 0:2] # [nrays, 2]
 
     # Segment [L1, L2]
-    L_1, L_2 = segments[:, 0, :][0:2], segments[:, 1, :][0:2] # [nsegment, 2]
+    L_1, L_2 = segments[:, 0, 0:2], segments[:, 1, 0:2] # [nsegment, 2]
 
     # I think we need (nrays nsegment 2 2)
     l1subl2 = L_1 - L_2
+    assert l1subl2.shape == (nsegments, 2)
 
     # A got shape [nrays nsegments 2 2]
-    A = t.stack([einops.repeat(D, "nrays 2 -> nrays nsegments 2", nsegment = nsegments), \
-                einops.repeat(l1subl2, "nsegments 2 -> nrays nsegments 2", nrays=nrays)], dim=-1)
+    A = t.stack([einops.repeat(D, "nrays dim -> nrays nsegments dim", nsegments = nsegments), \
+                einops.repeat(l1subl2, "nsegments dim -> nrays nsegments dim", nrays=nrays)], dim=-1)
     # b got shape [nrays nsegments 2]
-    b = einops.rearrange(L_1, "nsegment 2 -> 1 nsegment 2") - \
-        einops.rearrange(O, "nrays 2 -> nrays 1 2")
+    b = einops.rearrange(L_1, "nsegment dim -> 1 nsegment dim") - \
+        einops.rearrange(O, "nrays dim -> nrays 1 dim")
+
+    # Assign A's matrix to eye if det is 0
+    mask = t.linalg.det(A).abs() < 1e-8 # [nrays nsegments]
+    assert mask.size() == (nrays, nsegments)
+
+    A[mask] = t.eye(2)
+
+    # solve linear equation
+    sol = t.linalg.solve(A, b) #[nrays nsegments 2]
+
+    # Now we for each nray, we check if any segment that has u>=0, v>=0, v<=1
+    # First set the sol's mask to be unsolutionalbe e.g. u=-1, v=-1
+    sol[mask] = t.tensor([-1,-1]).float()
+    # Now check valid solution 
+    valid_sol_mask = (sol[..., 0] >= 0) & (sol[..., 1] >= 0) & (sol[..., 1] <= 1)
+    # So valid_sol_mask is [nray, nsegment], now just check if each ray ANY is true
+    return valid_sol_mask.any(dim=-1)
+
+tests.test_intersect_rays_1d(intersect_rays_1d)
 
 #%%
-# Intersection solution is (0,1)
-#seg = t.tensor([1,2,3,4,5,6,]).reshape(1,3,2)
-#ray = t.tensor([10,11,12,13]).reshape(2,1,2)
-#ray - seg
+def make_rays_2d(num_pixels_y: int, num_pixels_z: int, y_limit: float, z_limit: float) -> Float[Tensor, "nrays 2 3"]:
+    """
+    num_pixels_y: The number of pixels in the y dimension
+    num_pixels_z: The number of pixels in the z dimension
 
-x = t.tensor([1,2,3,4]).reshape(2,2)
-t.stack([x,x], dim=-1).shape
+    y_limit: At x=1, the rays should extend from -y_limit to +y_limit, inclusive of both.
+    z_limit: At x=1, the rays should extend from -z_limit to +z_limit, inclusive of both.
 
+    Returns: shape (num_rays=num_pixels_y * num_pixels_z, num_points=2, num_dims=3).
+    """
+    yrays = t.linspace(-y_limit, y_limit, num_pixels_y)
+    zrays = t.linspace(-z_limit, z_limit, num_pixels_z)
 
+    # First is using the meshgrid
+    grid_a, grid_b = t.meshgrid(yrays, zrays, indexing='ij')
+    yz_coords = t.stack([grid_a, grid_b], dim=-1).reshape(-1, 2)
+
+    A = t.zeros((num_pixels_z*num_pixels_y,2,3))
+    A[:, 1, -2:] = yz_coords
+    A[:, 1, 0] = 1.0
+
+    # Second is using repeat
+    B = t.zeros((num_pixels_y*num_pixels_z,2,3))
+    B[:, 1, 0] = 1.0
+    B[:, 1, 1] = einops.repeat(yrays, "a -> (a z)", z = num_pixels_z)
+    B[:, 1, 2] = einops.repeat(zrays, "a -> (y a)", y = num_pixels_y)
+
+    return B
+
+tests.test_make_rays_2d(make_rays_2d)
+
+#%%
+
+rays = make_rays_2d(9, 9, 1, 1)
+fig = render_lines_with_plotly(rays)
+
+# %%
+
+x = t.arange(3)
+einops.repeat(x, "z -> (y z)", y =3)
 # %%
