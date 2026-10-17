@@ -285,7 +285,7 @@ imshow(img, origin="lower", width=600, title="Triangle (as intersected by rays)"
 
 # %%
 triangles = t.load(section_dir / "pikachu.pt", weights_only=True)
-# %%
+
 def raytrace_mesh(
         rays: Float[Tensor, "nrays rayPoints=2 dims=3"],
         triangles: Float[Tensor, "ntriangles trianglePoints=3 dims=3"]
@@ -418,5 +418,30 @@ dists = einops.rearrange(dists, "frames (y z) -> frames y z", y = num_pixels_y)
 
 display_video(dists)
 # %%
-t.cuda.is_available()
+print(t.cuda.is_available())
+print(t.backends.mps.is_available())
+# %%
+def raytrace_mesh_gpu(
+    rays: Float[Tensor, "nrays rayPoints=2 dims=3"],
+    triangles: Float[Tensor, "ntriangles trianglePoints=3 dims=3"],
+) -> Float[Tensor, " nrays"]:
+    """
+    For each ray, return the distance to the closest intersecting triangle, or infinity.
+
+    All computations should be performed on the GPU
+    """
+    if t.cuda.is_available():
+        rays = rays.to("cuda")
+        triangles = triangles.to("cuda")
+    elif t.backends.mps.is_available():
+        rays = rays.to("mps")
+        triangles = triangles.to("mps")
+
+    dists = raytrace_mesh(rays, triangles)
+
+    return dists.to("cpu")
+
+dists = raytrace_mesh_video(rays, triangles, rotation_matrix, raytrace_mesh_gpu, num_frames)
+dists = einops.rearrange(dists, "frames (y z) -> frames y z", y=num_pixels_y)
+display_video(dists)
 # %%
