@@ -66,7 +66,6 @@ fig = render_lines_with_plotly(rays1d)
 fig: go.FigureWidget = setup_widget_fig_ray()
 display(fig)
 
-
 @interact(v=(0.0, 6.0, 0.01), seed=(0, 10, 1))
 def update(v=0.0, seed=0):
     t.manual_seed(seed)
@@ -219,7 +218,6 @@ def triangle_ray_intersects(A: Point, B: Point, C: Point, O: Point, D: Point) ->
         return False
 
     s, u, v = sol
-    print(f's {s} {u} {v} and {O + s * D}')
 
     return ((s >= 0) & (0 <= u) & (0 <= v) & (u + v <= 1)).item()
 
@@ -431,17 +429,195 @@ def raytrace_mesh_gpu(
     All computations should be performed on the GPU
     """
     if t.cuda.is_available():
-        rays = rays.to("cuda")
-        triangles = triangles.to("cuda")
+        device = t.device("cuda")
     elif t.backends.mps.is_available():
-        rays = rays.to("mps")
-        triangles = triangles.to("mps")
+        device = t.device("mps")
+    else:
+        device = t.device("cpu")
 
-    dists = raytrace_mesh(rays, triangles)
+    rays = rays.to(device)
+    triangles = triangles.to(device)
 
-    return dists.to("cpu")
+    nrays = rays.shape[0]
+    ntriangles = triangles.shape[0]
+
+    # Step 1 is to extract A, B, C, O, D
+    A, B, C = triangles.unbind(dim=1)
+    assert A.shape == (ntriangles, 3)
+
+    O, D = rays.unbind(dim=1)
+    assert O.shape == (nrays, 3)
+
+    # Step 2 is to repeat the shape so each A, B, C, O, D should have (nrays ntriangles, 3)
+    A = einops.repeat(A, "ntriangles dims -> nrays ntriangles dims", nrays = nrays)
+    B = einops.repeat(B, "ntriangles dims -> nrays ntriangles dims", nrays = nrays)
+    C = einops.repeat(C, "ntriangles dims -> nrays ntriangles dims", nrays = nrays)
+    O = einops.repeat(O, "nrays dims -> nrays ntriangles dims", ntriangles=ntriangles)
+    D = einops.repeat(D, "nrays dims -> nrays ntriangles dims", ntriangles=ntriangles)
+
+    # Step 3 is to construct mat and vec
+    mat = t.stack([-D, B-A, C-A], dim=-1)
+    assert mat.shape == (nrays, ntriangles, 3, 3)
+    is_singular = t.linalg.det(mat).abs() < 1e-6
+    assert is_singular.shape == (nrays, ntriangles)
+
+    mat[is_singular] = t.eye(3).to(device)
+
+    vec = O - A
+    assert vec.shape == (nrays, ntriangles, 3)
+
+    # Step 4 is to solve
+    sol = t.linalg.solve(mat, vec)
+    assert sol.shape == (nrays, ntriangles, 3)
+
+    s, u, v = sol.unbind(dim=-1) # should have shape (nrays, ntriangles)
+    assert s.shape == (nrays, ntriangles)
+    # This is valid for both nrays, ntriangles
+    valid_mask = (0 <= u) & (0 <= v) & (u + v <= 1) & (s >= 0) & (~is_singular)
+    assert valid_mask.shape == (nrays, ntriangles)
+    # But because we only care about ray so we will reduce last dim with any triangles intersect with each ray
+    valid_mask = valid_mask.any(dim=-1)
+    assert valid_mask.shape == (nrays,)
+
+    # Step 5 is to find the distance which is O + sD
+    ray_equation = O + t.mul(s[..., None], D) # must use mul, not matmul
+    all_dist = einops.reduce(ray_equation, "nrays ntriangles dim -> nrays ntriangles",
+                             lambda x, dim: (x**2).sum(dim=dim).sqrt())
+    min_dist = einops.reduce(all_dist, "nrays ntriangles -> nrays", "min")
+
+    min_dist[~valid_mask] = t.inf
+    return min_dist.to("cpu")
 
 dists = raytrace_mesh_video(rays, triangles, rotation_matrix, raytrace_mesh_gpu, num_frames)
 dists = einops.rearrange(dists, "frames (y z) -> frames y z", y=num_pixels_y)
 display_video(dists)
+# %%
+device = t.device("mps" if t.backends.mps.is_available() else "cuda" if t.cuda.is_available() else "cpu")
+
+def raytrace_mesh_lambert(
+        rays: Float[Tensor, "nrays points=2 dims=3"],
+        triangles: Float[Tensor, "ntriangles points=3 dims=3"],
+        light: Float[Tensor, "dims=3"],
+        ambient_intensity: float,
+        device: str = device,
+) -> Float[Tensor, "nrays"]:
+    """
+    For each ray, return the intensity of light hitting the triangle it intersects with (or zero if
+    no intersection).
+
+    Args:
+        rays:   A tensor of rays, with shape `[nrays, 2, 3]`.
+        triangles:  A tensor of triangles, with shape `[ntriangles, 3, 3]`.
+        light:  A tensor representing the light vector, with shape `[3]`. We compute the intensity
+                as the dot product of the triangle normals & the light vector, then set it to be
+                zero if the sign is negative.
+        ambient_intensity:  A float representing the ambient intensity. This is the minimum
+                            brightness for a triangle, to differentiate it from the black background
+                            (rays that don't hit any triangle).
+        device: The device to perform the computation on.
+
+    Returns:
+        A tensor of intensities for each of the rays, flattened over the [y, z] dimensions. The
+        values are zero when there is no intersection, and `ambient_intensity + intensity` when
+        there is an intersection (where `intensity` is the dot product of the triangle's normal
+        vector and the light vector, truncated at zero).
+    """
+    rays = rays.to(device)
+    triangles = triangles.to(device)
+
+    nrays = rays.shape[0]
+    ntriangles = triangles.shape[0]
+
+    # Step 1 is to extract A, B, C, O, D
+    A, B, C = triangles.unbind(dim=1)
+    assert A.shape == (ntriangles, 3)
+
+    O, D = rays.unbind(dim=1)
+    assert O.shape == (nrays, 3)
+
+    # Step 2 is to repeat the shape so each A, B, C, O, D should have (nrays ntriangles, 3)
+    A = einops.repeat(A, "ntriangles dims -> nrays ntriangles dims", nrays = nrays)
+    B = einops.repeat(B, "ntriangles dims -> nrays ntriangles dims", nrays = nrays)
+    C = einops.repeat(C, "ntriangles dims -> nrays ntriangles dims", nrays = nrays)
+    O = einops.repeat(O, "nrays dims -> nrays ntriangles dims", ntriangles=ntriangles)
+    D = einops.repeat(D, "nrays dims -> nrays ntriangles dims", ntriangles=ntriangles)
+
+    # Step 3 is to construct mat and vec
+    mat = t.stack([-D, B-A, C-A], dim=-1)
+    assert mat.shape == (nrays, ntriangles, 3, 3)
+    is_singular = t.linalg.det(mat).abs() < 1e-6
+    assert is_singular.shape == (nrays, ntriangles)
+
+    mat[is_singular] = t.eye(3).to(device)
+
+    vec = O - A
+    assert vec.shape == (nrays, ntriangles, 3)
+
+    # Step 4 is to solve
+    sol = t.linalg.solve(mat, vec)
+    assert sol.shape == (nrays, ntriangles, 3)
+
+    s, u, v = sol.unbind(dim=-1) # should have shape (nrays, ntriangles)
+    assert s.shape == (nrays, ntriangles)
+    # This is valid for both nrays, ntriangles
+    valid_mask = (0 <= u) & (0 <= v) & (u + v <= 1) & (s >= 0) & (~is_singular)
+    assert valid_mask.shape == (nrays, ntriangles)
+    # But because we only care about ray so we will reduce last dim with any triangles intersect with each ray
+    valid_mask = valid_mask.any(dim=-1)
+    assert valid_mask.shape == (nrays,)
+
+    # Step 5 is to find the distance which is O + sD and its min position
+    ray_equation = O + t.mul(s[..., None], D) # must use mul, not matmul
+    all_dist = einops.reduce(ray_equation, "nrays ntriangles dim -> nrays ntriangles",
+                             lambda x, dim: (x**2).sum(dim=dim).sqrt())
+    min_dist_index = t.argmin(all_dist, dim=-1)
+
+    # Step 6 is to find normal vector of all triangles
+    norm_vector: Tensor[Float, "nrays ntriangles 3"] = t.stack([t.mul(A[..., 1], B[..., 2]) - t.mul(A[..., 2], B[..., 1]),
+                                                                t.mul(A[..., 2], B[..., 0]) - t.mul(A[..., 0], B[..., 2]),
+                                                                t.mul(A[..., 0], B[..., 1]) - t.mul(A[..., 1], B[..., 0])], dim=-1)
+    assert norm_vector.shape == (nrays, ntriangles, 3)
+
+    # I am not sure if i need this step but because we project from -x towards +x so we want the normal vector point to +x so
+    # the nx component must be > 0 right? so we multiply -1 if the x component is < 0
+    norm_vector[norm_vector[..., 0] < 0] *= -1
+
+    # Step 7 is dot product, then from min_dist find the initensity of min_dist_index
+    intensity = einops.einsum(norm_vector, light, "i j k, k -> i j") + ambient_intensity
+    assert intensity.shape == (nrays, ntriangles)
+
+    intensity = intensity.gather(dim=-1, index=min_dist_index.reshape(nrays, 1)).unsqueeze()
+    assert intensity.shape == (nrays,)
+
+    intensity[~valid_mask] = 0
+
+    return intensity.cpu()
+
+def display_video_with_lighting(intensity: Float[Tensor, "frames y z"]):
+    """
+    Displays video of raytracing results, using Plotly. `distances` is a tensor where the [i, y, z]
+    element is the lighting intensity based on the angle of light & the surface of the triangle
+    which this ray hits first.
+    """
+    px.imshow(
+        intensity,
+        animation_frame=0,
+        origin="lower",
+        color_continuous_scale="magma",
+    ).update_layout(coloraxis_showscale=False, width=550, height=600, title="Raytrace mesh video (lighting)").show()
+
+ambient_intensity = 0.5
+light = t.tensor([0.0, -1.0, 1.0])
+raytrace_function = partial(
+    raytrace_mesh_lambert,
+    ambient_intensity=ambient_intensity,
+    light=light,
+)
+
+intensity = raytrace_mesh_video(rays, triangles, rotation_matrix, raytrace_function, num_frames)
+intensity = einops.rearrange(intensity, "frames (y z) -> frames y z", y=num_pixels_y)
+display_video_with_lighting(intensity)
+# %%
+v = t.tensor([-1, 2, 3, 4, 5, 6]).reshape(2,3)
+einops.einsum(v, t.tensor([1,2,3]), "i j, j -> i")
 # %%
