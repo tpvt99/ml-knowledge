@@ -524,6 +524,7 @@ def raytrace_mesh_lambert(
     """
     rays = rays.to(device)
     triangles = triangles.to(device)
+    light = light.to(device)
 
     nrays = rays.shape[0]
     ntriangles = triangles.shape[0]
@@ -573,9 +574,11 @@ def raytrace_mesh_lambert(
     min_dist_index = t.argmin(all_dist, dim=-1)
 
     # Step 6 is to find normal vector of all triangles
-    norm_vector: Tensor[Float, "nrays ntriangles 3"] = t.stack([t.mul(A[..., 1], B[..., 2]) - t.mul(A[..., 2], B[..., 1]),
-                                                                t.mul(A[..., 2], B[..., 0]) - t.mul(A[..., 0], B[..., 2]),
-                                                                t.mul(A[..., 0], B[..., 1]) - t.mul(A[..., 1], B[..., 0])], dim=-1)
+    v1 = A - B
+    v2 = C - B
+    norm_vector: Tensor[Float, "nrays ntriangles 3"] = t.stack([t.mul(v1[..., 1], v2[..., 2]) - t.mul(v1[..., 2], v2[..., 1]),
+                                                                t.mul(v1[..., 2], v2[..., 0]) - t.mul(v1[..., 0], v2[..., 2]),
+                                                                t.mul(v1[..., 0], v2[..., 1]) - t.mul(v1[..., 1], v2[..., 0])], dim=-1)
     assert norm_vector.shape == (nrays, ntriangles, 3)
 
     # I am not sure if i need this step but because we project from -x towards +x so we want the normal vector point to +x so
@@ -583,10 +586,12 @@ def raytrace_mesh_lambert(
     norm_vector[norm_vector[..., 0] < 0] *= -1
 
     # Step 7 is dot product, then from min_dist find the initensity of min_dist_index
-    intensity = einops.einsum(norm_vector, light, "i j k, k -> i j") + ambient_intensity
+    intensity = einops.einsum(norm_vector, light, "i j k, k -> i j")
+    intensity = intensity.clip(min=0) # clip first
+    intensity += ambient_intensity # then add ambient light
     assert intensity.shape == (nrays, ntriangles)
 
-    intensity = intensity.gather(dim=-1, index=min_dist_index.reshape(nrays, 1)).unsqueeze()
+    intensity = intensity.gather(dim=-1, index=min_dist_index.reshape(nrays, 1)).squeeze()
     assert intensity.shape == (nrays,)
 
     intensity[~valid_mask] = 0
@@ -618,6 +623,11 @@ intensity = raytrace_mesh_video(rays, triangles, rotation_matrix, raytrace_funct
 intensity = einops.rearrange(intensity, "frames (y z) -> frames y z", y=num_pixels_y)
 display_video_with_lighting(intensity)
 # %%
-v = t.tensor([-1, 2, 3, 4, 5, 6]).reshape(2,3)
-einops.einsum(v, t.tensor([1,2,3]), "i j, j -> i")
+v = t.arange(36).reshape(3,4,3)
+print(v)
+temp = t.tensor([1,1,1])
+hihi = einops.einsum(v, temp, "i j k, k -> i j") # 3, 4
+print(hihi)
+min_index = t.tensor([1,2,3])
+t.gather(hihi, dim=1, index=min_index)
 # %%
