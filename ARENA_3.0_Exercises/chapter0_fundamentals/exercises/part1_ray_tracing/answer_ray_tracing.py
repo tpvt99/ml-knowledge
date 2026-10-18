@@ -564,20 +564,20 @@ def raytrace_mesh_lambert(
     s = s * D[..., 0]
     valid_mask = (0 <= u) & (0 <= v) & (u + v <= 1) & (s >= 0) & (~is_singular)
     assert valid_mask.shape == (nrays, ntriangles)
-    # But because we only care about ray so we will reduce last dim with any triangles intersect with each ray
-    valid_mask = valid_mask.any(dim=-1)
-    assert valid_mask.shape == (nrays,)
+    ## But because we only care about ray so we will reduce last dim with any triangles intersect with each ray
+    # -> THIS IS THE CULPRIT for the wrong ray tracing, should not reduce last dim but let it be there and
+    #valid_mask = valid_mask.any(dim=-1)
+    #assert valid_mask.shape == (nrays,)
 
     # Step 5 is to find the distance which is O + sD and its min position
-    #ray_equation = O + t.mul(s[..., None], D) # must use mul, not matmul
-    #all_dist = einops.reduce(ray_equation, "nrays ntriangles dim -> nrays ntriangles",
-                             #lambda x, dim: (x**2).sum(dim=dim).sqrt())
+    ray_equation = O + t.mul(s[..., None], D) # must use mul, not matmul
+    all_dist = einops.reduce(ray_equation, "nrays ntriangles dim -> nrays ntriangles",
+                             lambda x, dim: (x**2).sum(dim=dim).sqrt())
 
-    all_dist = s
     all_dist[~valid_mask] = t.inf
-    min_dist_value, min_dist_index = t.min(all_dist, dim=-1)
-    assert min_dist_value.shape == (nrays,)
-    assert min_dist_index.shape == (nrays,)
+    closest_distances, closest_triangles_for_each_ray = t.min(all_dist, dim=-1)
+    assert closest_distances.shape == (nrays,)
+    assert closest_triangles_for_each_ray.shape == (nrays,)
 
     # Step 6 is to find normal vector of all triangles
     v1 = A - B
@@ -585,40 +585,18 @@ def raytrace_mesh_lambert(
     norm_vector: Tensor[Float, "nrays ntriangles 3"] = t.stack([t.mul(v1[..., 1], v2[..., 2]) - t.mul(v1[..., 2], v2[..., 1]),
                                                                 t.mul(v1[..., 2], v2[..., 0]) - t.mul(v1[..., 0], v2[..., 2]),
                                                                 t.mul(v1[..., 0], v2[..., 1]) - t.mul(v1[..., 1], v2[..., 0])], dim=-1)
-    norm_vector = t.cross(C - A, B - A, dim=2)  # shape [NT dims]
     norm_vector = norm_vector / norm_vector.norm(dim=2, keepdim=True)
     assert norm_vector.shape == (nrays, ntriangles, 3)
 
     # Step 7 is dot product, then from min_dist find the initensity of min_dist_index
-    intensity = einops.einsum(norm_vector, light, "i j k, k -> i j")
-    intensity = t.where(intensity > 0, intensity, 0.0) # this signed check if light is coming from the wrong side of triangle
-    intensity += ambient_intensity # then add ambient light
-    assert intensity.shape == (nrays, ntriangles)
+    intensity_per_triangle = einops.einsum(norm_vector, light, "i j k, k -> i j")
+    intensity_per_triangle_signed = t.where(intensity_per_triangle > 0, intensity_per_triangle, 0.0) # this signed check if light is coming from the wrong side of triangle
+    assert intensity_per_triangle_signed.shape == (nrays, ntriangles)
 
-    intensity = intensity.gather(dim=-1, index=min_dist_index.reshape(nrays, 1)).squeeze()
+    intensity = intensity_per_triangle_signed.gather(dim=-1, index=closest_triangles_for_each_ray.reshape(nrays, 1)).squeeze() + ambient_intensity
     assert intensity.shape == (nrays,)
 
-    intensity = t.where(min_dist_value.isfinite(), intensity, 0)
-
-    # Scale s by Dx to get the distance along ray
-    #s *= D[..., 0]
-
-    ## Get boolean of intersects, and use it to set distance = infinity when there is no intersection
-    #intersects = (s >= 0) & (u >= 0) & (v >= 0) & (u + v <= 1) & ~is_singular
-    #s[~intersects] = float("inf")
-    #closest_distances, closest_triangles_for_each_ray = s.min(dim=-1)  # both shape [NR]
-
-    ## Get the intensity by taking dot product of triangle normals & light vector
-    #normals = t.cross(triangles[:, 2] - triangles[:, 0], triangles[:, 1] - triangles[:, 0], dim=1)  # shape [NT dims]
-    #normals /= normals.norm(dim=1, keepdim=True)
-    #intensity_per_triangle = einops.einsum(normals, light.to(device), "nt dims, dims -> nt")
-    #intensity_per_triangle_signed = t.where(intensity_per_triangle > 0, intensity_per_triangle, 0.0)
-
-    ## Get intensity for each ray, and add ambient intensity where there's an intersection
-    #intensity = intensity_per_triangle_signed[closest_triangles_for_each_ray] + ambient_intensity
-
-    ## Set to zero if the ray doesn't intersect with any triangle
-    #intensity = t.where(closest_distances.isfinite(), intensity, 0.0)
+    intensity = t.where(closest_distances.isfinite(), intensity, 0)
 
     return intensity.cpu()
 
@@ -655,6 +633,14 @@ print(hihi)
 min_index = t.tensor([1,2,3])
 t.gather(hihi, dim=1, index=min_index.reshape(3,1))
 # %%
-v = t.arange(36).reshape(9,4)
-print(v.min(-1))
+# Before intensity is [ntrianges,]
+intensity = t.arange(5, 5+12).reshape(12)
+print(intensity)
+min_index = t.tensor([0, 0, 1, 5]) # nr
+print(intensity[min_index])
+
+# After intensity is [nray, ntrianges]
+intensity = t.arange(4*12).reshape(4, 12) # 4 rays, each with 12 triangles
+print(intensity)
+t.gather(intensity, dim=1, index=min_index.reshape(4,1))
 # %%
