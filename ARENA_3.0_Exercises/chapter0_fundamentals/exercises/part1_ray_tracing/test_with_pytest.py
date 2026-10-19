@@ -30,7 +30,7 @@ B = t.tensor([2, -1.0, 0.0])
 C = t.tensor([2, 1.0, 1.0])
 triangle_rays = t.tensor([[[0.0, 0.0, 0.0], [1.0000, 0.3333, 0.3333]], [[0.0, 0.0, 0.0], [1.0, 1.0, -1.0]]])
 
-answers = import_module("part1_ray_tracing.answers") if find_spec("part1_ray_tracing.answers") else None
+answers = import_module("part1_ray_tracing.answers_ray_tracing") if find_spec("part1_ray_tracing.answers_ray_tracing") else None
 
 requires_answers = pytest.mark.skipif(
     answers is None,
