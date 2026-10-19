@@ -472,20 +472,25 @@ def raytrace_mesh_gpu(
 
     s, u, v = sol.unbind(dim=-1) # should have shape (nrays, ntriangles)
     assert s.shape == (nrays, ntriangles)
+    s = s * D[..., 0]
     # This is valid for both nrays, ntriangles
     valid_mask = (0 <= u) & (0 <= v) & (u + v <= 1) & (s >= 0) & (~is_singular)
     assert valid_mask.shape == (nrays, ntriangles)
     # But because we only care about ray so we will reduce last dim with any triangles intersect with each ray
-    valid_mask = valid_mask.any(dim=-1)
-    assert valid_mask.shape == (nrays,)
+    #valid_mask = valid_mask.any(dim=-1)
+    #assert valid_mask.shape == (nrays,)
 
     # Step 5 is to find the distance which is O + sD
     ray_equation = O + t.mul(s[..., None], D) # must use mul, not matmul
     all_dist = einops.reduce(ray_equation, "nrays ntriangles dim -> nrays ntriangles",
                              lambda x, dim: (x**2).sum(dim=dim).sqrt())
+    all_dist[~valid_mask] = t.inf
     min_dist = einops.reduce(all_dist, "nrays ntriangles -> nrays", "min")
 
-    min_dist[~valid_mask] = t.inf
+    # These lines of code give output as expected as solutions
+    #s[~valid_mask] = t.inf
+    #min_dist = einops.reduce(s, "nr nt -> nr", "min")
+
     return min_dist.to("cpu")
 
 dists = raytrace_mesh_video(rays, triangles, rotation_matrix, raytrace_mesh_gpu, num_frames)
