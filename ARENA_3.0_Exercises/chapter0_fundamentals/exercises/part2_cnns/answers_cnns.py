@@ -566,12 +566,12 @@ class BlockGroup(nn.Module):
         self.out_feats = out_feats
         self.first_stride = first_stride
 
-        self.first_block = ResidualBlock(
+        first_block = ResidualBlock(
             in_feats=in_feats,
             out_feats=out_feats,
             first_stride=first_stride
         )
-        self.blocks = [self.first_block]
+        self.blocks = [first_block]
 
         for _ in range(1, n_blocks):
             self.blocks.append(ResidualBlock(
@@ -580,7 +580,10 @@ class BlockGroup(nn.Module):
                 first_stride=1
             ))
 
-        self.blocks = Sequential(self.blocks)
+        #self.blocks = nn.ModuleList(self.blocks)
+        self.blocks = Sequential(*self.blocks)
+
+        # An issue when i try. If using Sequential, then need *self.blocks to extract to *modules in Sequential we did. Then in forward, just self.blocks(x) without for loop. 2/ If you put self.blocks = [], torch won't track parameters even in forward you do for block in self.blocks. You have to use nn.ModuleList or nn.Sequential which supports list. If we use our own Sequential, then just dont for loop in forward
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -588,15 +591,134 @@ class BlockGroup(nn.Module):
         x: shape (batch, in_feats, height, width)
         Return: shape (batch, out_feats, height/first_stride, width / first_stride) 
         """
-        for block in self.blocks:
-            x = block(x)
+        #for block in self.blocks:
+            #x = block(x)
+        x = self.blocks(x)
         return x
 
 tests.test_block_group(BlockGroup)
 
+#%%
+class ResNet34(nn.Module):
+    def __init__(
+            self,
+            n_blocks_per_group=[3, 4, 6, 3],
+            out_features_per_group=[64, 128, 256, 512],
+            first_strides_per_group=[1, 2, 2, 2],
+            n_classes=1000, 
+            ):
+        super().__init__()
+        out_feats0 = 64
+        self.n_blocks_per_group = n_blocks_per_group
+        self.out_features_per_group = out_features_per_group
+        self.first_strides_per_group = first_strides_per_group
+        self.n_classes = n_classes
+
+        # Building first conv
+        self.conv1 = Sequential(
+            Conv2d(in_channels = 3, out_channels=out_feats0,
+                    kernel_size=7, stride=2, padding=3),
+            BatchNorm2d(num_features=out_feats0),
+            ReLU())
+
+        self.max_pool1 = MaxPool2d(kernel_size=3, stride=2)
+
+        # Building block group
+        groups = []
+        for nth_group in range(len(n_blocks_per_group)):
+            groups.append(BlockGroup(
+                n_blocks= n_blocks_per_group[nth_group],
+                in_feats = out_feats0 if nth_group == 0 else out_features_per_group[nth_group-1],
+                out_feats=out_features_per_group[nth_group],
+                first_stride=first_strides_per_group[nth_group]
+            ))
+
+        self.groups = Sequential(*groups)
+
+        # Building last layer
+        self.avg_pool = AveragePool()
+        self.linear = Linear(in_features=out_features_per_group[-1], out_features=n_classes)
+
+
+    def forward(self, x: Float[Tensor, "b c h w"]) -> Float[Tensor, "b classes=1000"]:
+        """
+        x: shape (batch, channels, height, width)
+        Return: shape (batch, n_classes)
+        """
+        out_conv1 = self.conv1(x)
+        in_block = self.max_pool1(out_conv1)
+        out_block = self.groups(in_block)
+        output = self.linear(self.avg_pool(out_block))
+        return output
+
+my_resnet = ResNet34()
+utils.print_param_count(my_resnet)
+
 # %%
-x = t.rand(3, 10, 3, 3)
-temp = BlockGroup(2,3,3,2)
-for i in range(1, 2):
-    print(i)
+# Test 1 via helper function `print_param_count`
+target_resnet = models.resnet34()
+utils.print_param_count(my_resnet, target_resnet)
+# %%
+# Test 2 via torchinfo.summary
+print("My model: ", torchinfo.summary(my_resnet, input_size=(1, 3, 64, 64)), sep="\n")
+print("Reference model: ", torchinfo.summary(target_resnet, input_size=(1, 3, 64, 64), depth=2), sep="\n")
+# %%
+def copy_weights(my_resnet: ResNet34, pretrained_resnet: models.resnet.ResNet) -> ResNet34:
+    """
+    Copy weights of `pretrained_resnet` to your resnet
+    """
+    # Get the state dictionaries for each model, check they have the same number of parameters and buffers
+    mydict = my_resnet.state_dict()
+    pretraineddict = pretrained_resnet.state_dict()
+    assert len(mydict) == len(pretraineddict), "Mismatching state dictionaries."
+
+    # Define a dictionary mapping the names of your parameters/buffers to their values in the pretrained model
+    state_dict_to_load = {
+        mykey: pretrainedvalue for (mykey, myvalue), (pretrainedkey, pretrainedvalue) in zip(mydict.items(), pretraineddict.items())
+    }
+
+    # Load in this dictionary to your model
+    my_resnet.load_state_dict(state_dict_to_load)
+
+    return my_resnet
+
+pretrained_resnet = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1).to(device)
+my_resnet = copy_weights(my_resnet, pretrained_resnet).to(device)
+for (mykey, myvalue), (pretrainedkey, pretrainedvalue) in zip(my_resnet.state_dict().items(), pretrained_resnet.state_dict().items()):
+    assert ((myvalue - pretrainedvalue).abs() < 1e-6).all()
+print("Weights copied successfully")
+# %%
+# Running the model
+IMAGE_FILENAMES = [
+    "chimpanzee.jpg",
+    "golden_retriever.jpg",
+    "platypus.jpg",
+    "frogs.jpg",
+    "fireworks.jpg",
+    "astronaut.jpg",
+    "iguana.jpg",
+    "volcano.jpg",
+    "goofy.jpg",
+    "dragonfly.jpg",
+]
+
+IMAGE_FOLDER = section_dir / "resnet_inputs"
+images = [Image.open(IMAGE_FOLDER / filename) for filename in IMAGE_FILENAMES]
+display(images[0])
+# %%
+IMAGE_SIZE = 224
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
+
+IMAGENET_TRANSFORM = transforms.Compose(
+    [
+        transforms.ToImage(),
+        transforms.ToDtype(t.float32, scale=True),
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+        transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+    ]
+)
+
+prepared_images = t.stack([IMAGENET_TRANSFORM(img) for img in images], dim = 0).to(device)
+assert prepared_images.shape == (len(images), 3, IMAGE_SIZE, IMAGE_SIZE)
 # %%
