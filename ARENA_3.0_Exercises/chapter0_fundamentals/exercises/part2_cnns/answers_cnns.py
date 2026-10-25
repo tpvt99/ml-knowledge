@@ -69,7 +69,6 @@ class Linear(nn.Module):
         else:
             self.bias = None
 
-
     def forward(self, x: Tensor) -> Tensor:
         """
         x: shape (*, in_features) 
@@ -721,4 +720,206 @@ IMAGENET_TRANSFORM = transforms.Compose(
 
 prepared_images = t.stack([IMAGENET_TRANSFORM(img) for img in images], dim = 0).to(device)
 assert prepared_images.shape == (len(images), 3, IMAGE_SIZE, IMAGE_SIZE)
+# %%
+@t.inference_mode()
+def predict(
+    model: nn.Module, images: Float[Tensor, "batch rgb h w"] 
+) -> tuple[Float[Tensor, "batch"], Int[Tensor, "batch"]]:
+    """
+    Returns the maximum probability and predicted class for each image, as a tensor of floats and ints respectively
+    """
+    model.eval()
+    model = model.to(device)
+    images = images.to(device)
+    logits = model(images)
+    probs = t.softmax(logits, dim=1)
+    predictions = t.max(probs, dim=-1)
+    return (predictions.values, predictions.indices)
+
+with open(section_dir / "imagenet_labels.json") as f:
+    imagenet_labels = list(json.load(f).values())
+
+# Check your predictions match those of the pretrained model
+my_probs, my_predictions = predict(my_resnet, prepared_images)
+pretrained_probs, pretrained_predictions = predict(pretrained_resnet, prepared_images)
+assert (my_predictions == pretrained_predictions).all()
+t.testing.assert_close(my_probs, pretrained_probs, atol=5e-4, rtol=0) # tolerance of 0.05%
+print("All predictions match!")
+
+for i, img in enumerate(images):
+    table = Table("Model", "Prediction", "Probability")
+    table.add_row("My ResNet", imagenet_labels[my_predictions[i]], f"{my_probs[i]:.3f}")
+    table.add_row("Reference Model", imagenet_labels[pretrained_predictions[i]], f"{pretrained_probs[i]:.3f}")
+    rprint(table)
+    display(img)
+
+# %%
+# Code for hook
+class NanModule(nn.Module):
+    """
+    Define a module that always returns NaNs (we will use hooks to identify this error) 
+    """
+    def forward(self, x):
+        return t.full_like(x, float("nan"))
+
+def hook_check_for_nan_output(module: nn.Module, input: tuple[Tensor], output: Tensor) -> None:
+    """
+    Hook function which detects when the output of a layer is NaN 
+    """
+    if t.isnan(output).any():
+        raise ValueError(f"Nan output from {module}")
+
+def hook_check_for_nan(module: nn.Module, input: Tensor) -> None:
+    """
+    Hook function which detects when the output of a layer is NaN 
+    """
+    print(input)
+    if t.isnan(input[0]).any():
+        raise ValueError(f"Nan input from {module}")
+
+def add_hook(module: nn.Module) -> None:
+    """
+    Register our hook function in a module
+
+    Use model.apply(add_hook) to recursively apply the hook to model and all submodules
+    """
+    module.register_forward_hook(hook_check_for_nan_output)
+    module.register_forward_pre_hook(hook_check_for_nan)
+
+def remove_hooks(module: nn.Module) -> None:
+    """
+    Remove all hooks from module
+
+    Use model.apply(remove_hooks) to do this recursively
+    """
+    module._backward_hooks.clear()
+    module._forward_hooks.clear()
+    module._forward_pre_hooks.clear()
+
+# Create our omdel with a Nan in the middle, and apply a hook fn to it which checks for Nan
+model = Sequential(nn.Identity(), NanModule(), nn.Identity())
+#add_hook(model) Why this not work? i thought add hook's input is module to add hook?
+model = model.apply(add_hook) # have to add
+try:
+    input = t.rand(10,3)
+    model(input)
+except ValueError as e:
+    print(e)
+# %%
+### Bonus material - feature extraction
+def get_resnet_for_feature_extraction(n_classes: int) -> ResNet34:
+    """
+    Creates a ResNet34 instance, replaces its final linear layer with a classifier for `n_claases` classes,a dn freezes all weights except the ones in this layer
+    """
+    # Step 1. Instantiate the model
+    model = ResNet34()
+    # Step 2. Load weights
+    pretrained_model = models.resnet34(weights=models.ResNet34_Weights.IMAGENET1K_V1)
+    mydict = model.state_dict()
+    pretraineddict = pretrained_model.state_dict()
+    assert len(mydict) == len(pretraineddict), "Mismatching model"
+
+    state_load_map = {mykey : pretrainedvalue for (mykey, myvalue), (pretrainedkey, pretrainedvalue) in zip(mydict.items(), pretraineddict.items())}
+    model.load_state_dict(state_dict=state_load_map)
+    # step 3. disable gradients
+    for param in model.parameters():
+        param.requires_grad_(False)
+    # step 4. replace the last linear with linear with `n_classes`
+    model.linear = Linear(in_features=model.out_features_per_group[-1], out_features=n_classes)
+
+    return model
+
+tests.test_get_resnet_for_feature_extraction(get_resnet_for_feature_extraction)
+
+@dataclass
+class ResNetTrainArgs:
+    batch_size: int = 64
+    epochs: int = 5
+    learning_rate: float = 1e-3
+    n_classes: int = 10
+
+def get_cifar(trainset_size: int = 10_000, testset_size: int = 1_000) -> tuple[Subset, Subset]:
+    """Returns a subset of CIFAR-10 train and test sets (slicing the first examples)."""
+    cifar_trainset = CIFAR10(train=True)
+    cifar_testset = CIFAR10(train=False)
+
+    cifar_trainset = Subset(cifar_trainset, indices=range(trainset_size))
+    cifar_testset = Subset(cifar_testset, indices=range(testset_size))
+
+    return cifar_trainset, cifar_testset
+
+def train(args: ResNetTrainArgs) -> tuple[list[float], list[float], ResNet34]:
+    """
+    Performs feature extraction on ResNet, returning the model and lists of loss and accuracy
+    """
+    model = get_resnet_for_feature_extraction(n_classes=args.n_classes)
+    model = model.to(device)
+
+    cifar_trainset, cifar_testset = get_cifar()
+    cifar_trainset = DataLoader(cifar_trainset, batch_size=args.batch_size, shuffle=True)
+    cifar_testset = DataLoader(cifar_testset, batch_size=args.batch_size, shuffle=False)
+    loss_list = []
+    accuracy_list = []
+
+    optimizer = t.optim.AdamW(model.linear.parameters(), lr = args.learning_rate) # I pass all and it is fine i think
+
+    print('Starting')
+    for epoch in range(args.epochs):
+        pbar = tqdm(cifar_trainset)
+        model.train()
+        for img, label in pbar:
+            # should move first then transform
+            img = img.to(device)
+            label = label.to(device)
+            img = IMAGENET_TRANSFORM(img)
+
+            # Forward pass
+            logits = model(img) # should have shape (batch, n_classes)
+            loss = nn.functional.cross_entropy(logits, label)
+
+            # Do optimization
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+            loss_list.append(loss.item())
+            pbar.set_postfix(epoch=f"epoch={epoch}/{args.epochs}",
+                             loss=f"losss={loss.item():.3f}", refresh=False)
+
+        with t.inference_mode():
+            accuracy_sum = 0
+            model.eval()
+            for img, label in cifar_testset:
+                img = img.to(device)
+                label = label.to(device)
+                img = IMAGENET_TRANSFORM(img)
+
+                # well in code, they put with t.inference_mode() only when forward
+                #with t.inference_mode():
+                    #logits = model(img)
+                logits = model(img)
+                accuracy = (t.argmax(logits, dim=-1) == label).float().sum()
+                accuracy_sum += accuracy.item()
+            accuracy_list.append(accuracy_sum / len(cifar_testset))
+
+    return (loss_list, accuracy_list, model)
+
+args = ResNetTrainArgs()
+loss_list, accuracy_list, model = train(args)
+# %%
+line(
+    y=[loss_list, [1 / args.n_classes] + accuracy_list], # start assuming a uniform accuracy of 10%
+    use_secondary_yaxis=True,
+    x_max=args.epochs*10_000,
+    label={"x": "Num examples seen", "y1": "Cross entropy loss", "y2": "Test accuracy"},
+    title="ResNet Feature Extraction",
+    width=800
+)
+
+# %%
+model = get_resnet_for_feature_extraction(n_classes=10)
+for i in model.parameters():
+    print(i.shape)
+    print(i.requires_grad)
+    break
 # %%
