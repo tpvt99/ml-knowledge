@@ -20,12 +20,14 @@ dependencies = [
     "plotly>=7.1.0",
     "pytest>=8.4.1",
     "rich>=15.0.0",
+    "scikit-learn>=1.9.1",
     "torch>=2.7.1",
     "torchaudio>=2.7.1",
     "torchinfo>=1.8.0",
     "torchtyping>=0.1.5",
     "torchvision>=0.22.1",
     "tqdm>=4.70.1",
+    "wandb>=0.31.0",
 ]
 
 [tool.uv.sources]
