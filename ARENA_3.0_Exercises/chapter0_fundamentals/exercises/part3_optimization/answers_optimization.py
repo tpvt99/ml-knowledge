@@ -95,7 +95,79 @@ for optimizer_class, params in optimizer_list:
     print(f"{params=}, last point={xys[-1]}")
 
 plot_fn_with_points(pathological_curve_loss, points=points, min_points=[(0, "y_min")])
+# %%
+class SGD:
+    def __init__(self,
+                 params: Iterable[t.nn.parameter.Parameter],
+                 lr: float,
+                 momentum: float = 0.0,
+                 weight_decay: float = 0.0,
+    ):
+        """
+        Implements SGD with momentum
 
+        Like the Pytorch version, but assume nesterov=False, maximize=False, and dampening=0 
+        """
+        self.params = list(params) # turns params into a list (it might be a generator so iterating over it empties it)
+        self.lr = lr
+        self.mu = momentum
+        self.lmda = weight_decay
 
+        self.b = [t.zeros_like(p) for p in self.params]
 
+    def zero_grad(self) -> None:
+        """Zeros all gradients of the parameters in `self.params`."""
+        for param in self.params:
+            param.grad = None
+
+    @t.inference_mode()
+    def step(self) -> None:
+        """Performs a single optimization step of the SGD algorithm"""
+        for i, param in enumerate(self.params):
+            grad = param.grad
+            if self.lmda != 0:
+                grad = grad + self.lmda * param # should not be in place as we dont want to change param.grad
+
+            if abs(self.mu) > 1e-6:
+                #self.b[i] = self.mu * self.b[i] + grad # it seems must use in-place but self.b is temporary can use non inplace can?
+                self.b[i].copy_(self.mu * self.b[i] + grad) # oh the .copy_ actually creates new object, better use .mul_().add_()
+                grad = self.b[i]
+
+            param.add_(-self.lr * grad) 
+
+    def __repr__(self) -> str:
+        return f"SGD(lr={self.lr}, momentum={self.mu}, weight_decay={self.lmda})"
+
+tests.test_sgd(SGD)
+tests.test_step_doesnt_modify_grads(SGD, momentum=0.5)
+
+# %%
+x = t.tensor([0.2, 0.3]).requires_grad_(True)
+optim = SGD([x], lr=0.01)
+loss = (x - t.tensor([1.0, 1.0]))**2
+loss.sum().backward()
+print(x)
+print(f"id x: {x.data_ptr()} id x's grad {x.grad.data_ptr()} id x'data {x.data.data_ptr()}")
+print(x.grad)
+print(id(x.grad))
+print(id(x.data))
+optim.step()
+#optim.zero_grad()
+print(x)
+print(x.grad)
+print(x.data)
+print(f"id x: {x.data_ptr()} id x's grad {x.grad.data_ptr()} id x'data {x.data.data_ptr()}")
+
+# %%
+w = t.nn.Parameter(t.tensor([1.0, 2.0]), requires_grad=False)
+alias = w.detach()          # shares w's storage, a separate object
+
+w.data = w.data - 1         # swaps in new storage
+print(w, alias)             # w is [0, 1], alias is still [1, 2]
+
+w = t.nn.Parameter(t.tensor([1.0, 2.0]))
+alias = w.detach()
+with t.no_grad():
+    w -= 1                  # overwrites the shared storage
+print(w, alias)             # both are [0, 1]
 # %%
