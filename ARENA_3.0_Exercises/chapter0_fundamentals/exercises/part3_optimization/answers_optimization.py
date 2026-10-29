@@ -141,33 +141,239 @@ class SGD:
 tests.test_sgd(SGD)
 tests.test_step_doesnt_modify_grads(SGD, momentum=0.5)
 
-# %%
-x = t.tensor([0.2, 0.3]).requires_grad_(True)
-optim = SGD([x], lr=0.01)
-loss = (x - t.tensor([1.0, 1.0]))**2
-loss.sum().backward()
-print(x)
-print(f"id x: {x.data_ptr()} id x's grad {x.grad.data_ptr()} id x'data {x.data.data_ptr()}")
-print(x.grad)
-print(id(x.grad))
-print(id(x.data))
-optim.step()
-#optim.zero_grad()
-print(x)
-print(x.grad)
-print(x.data)
-print(f"id x: {x.data_ptr()} id x's grad {x.grad.data_ptr()} id x'data {x.data.data_ptr()}")
+class RMSprop:
+    def __init__(self, 
+                 params: Iterable[t.nn.parameter.Parameter],
+                 lr: float = 0.01,
+                 alpha: float = 0.99,
+                 eps: float = 1e-08,
+                 weight_decay: float = 0.0,
+                 momentum: float = 0.0):
+        """
+        Implements RMSprop 
+        """
+        self.params = list(params)
+        self.lr = lr
+        self.eps = eps
+        self.mu = momentum
+        self.lmda = weight_decay
+        self.alpha = alpha
+
+        self.b = [t.zeros_like(p) for p in self.params]
+        self.v = [t.zeros_like(p) for p in self.params]
+
+    def zero_grad(self) -> None:
+        for p in self.params:
+            p.grad = None
+
+    @t.inference_mode()
+    def step(self) -> None:
+        for param, b, v in zip(self.params, self.b, self.v):
+            grad = param.grad # make a copy
+            if self.lmda != 0:
+                grad = grad + self.lmda * param # a new grad, not modified
+
+            v.copy_(self.alpha * v + (1 - self.alpha) * grad**2)
+            grad = grad / (t.sqrt(v) + self.eps) # not in place
+
+            if self.mu != 0:
+                b.copy_(self.mu * b + grad)
+                grad = b
+
+            param.sub_(self.lr * grad) # in place to replace param
+
+    def __repr__(self) -> str:
+        return (
+            f"RMSprop(lr={self.lr}, eps={self.eps}, momentum={self.mu}, weight_decay={self.lmda}, alpha={self.alpha})"
+        )
+
+tests.test_rmsprop(RMSprop)
+tests.test_step_doesnt_modify_grads(RMSprop, momentum=0.5)
+
+class Adam:
+    def __init__(
+            self,
+            params: Iterable[t.nn.parameter.Parameter],
+            lr: float = 0.001,
+            betas: tuple[float, float] = (0.9, 0.999),
+            eps: float = 1e-8,
+            weight_decay: float = 0.0
+    ):
+        """
+        Implements Adam 
+        """
+
+        self.params = list(params)
+        self.lr = lr
+        self.beta1, self.beta2 = betas
+        self.eps = eps
+        self.lmda = weight_decay
+        self.t = 1
+
+        self.m = [t.zeros_like(param) for param in self.params]
+        self.v = [t.zeros_like(param) for param in self.params]
+
+    def zero_grad(self) -> None:
+        for p in self.params:
+            p.grad = None
+
+    @t.inference_mode()
+    def step(self) -> None:
+        for param, m, v in zip(self.params, self.m, self.v):
+            grad = param.grad
+            if self.lmda != 0:
+                grad = grad + self.lmda * param
+
+            m.copy_(self.beta1 * m + (1 - self.beta1) * grad)
+            v.copy_(self.beta2 * v + (1 - self.beta2) * grad**2) 
+
+            mhat = m / (1 - self.beta1**self.t)
+            vhat = v / (1 - self.beta2**self.t)
+
+            param -= self.lr * mhat / (t.sqrt(vhat) + self.eps)
+
+        self.t+=1
+
+    def __repr__(self) -> str:
+        return f"Adam(lr={self.lr}, beta1={self.beta1}, beta2={self.beta2}, eps={self.eps}, weight_decay={self.lmda})"
+    
+tests.test_adam(Adam)
+tests.test_step_doesnt_modify_grads(Adam)
+
+class AdamW:
+    def __init__(
+        self,
+        params: Iterable[t.nn.parameter.Parameter],
+        lr: float = 0.001,
+        betas: tuple[float, float] = (0.9, 0.999),
+        eps: float = 1e-08,
+        weight_decay: float = 0.0,
+    ):
+        """Implements AdamW.
+
+        Like the PyTorch version, but assumes amsgrad=False and maximize=False
+            https://pytorch.org/docs/stable/generated/torch.optim.AdamW.html
+        """
+        self.params = list(params)
+        self.lr = lr
+        self.beta1, self.beta2 = betas
+        self.eps = eps
+        self.lmda = weight_decay
+        self.t = 1
+
+        self.m = [t.zeros_like(p) for p in self.params]
+        self.v = [t.zeros_like(p) for p in self.params]
+
+    def zero_grad(self) -> None:
+        for p in self.params:
+            p.grad = None
+
+    @t.inference_mode()
+    def step(self) -> None:
+        for param, m, v in zip(self.params, self.m, self.v):
+            grad = param.grad
+
+            m.copy_(self.beta1 * m + (1 - self.beta1) * grad)
+            v.copy_(self.beta2 * v + (1-self.beta2)*grad.pow(2))
+
+            m_hat = m / (1 - self.beta1**self.t)
+            v_hat = v / (1 - self.beta2**self.t) 
+
+            param -= self.lr * (m_hat / (t.sqrt(v_hat) + self.eps) + self.lmda * param)
+
+        self.t += 1
+
+    def __repr__(self) -> str:
+        return f"AdamW(lr={self.lr}, beta1={self.beta1}, beta2={self.beta2}, eps={self.eps}, weight_decay={self.lmda})"
+
+
+tests.test_adamw(AdamW)
+tests.test_step_doesnt_modify_grads(AdamW)
+
 
 # %%
-w = t.nn.Parameter(t.tensor([1.0, 2.0]), requires_grad=False)
-alias = w.detach()          # shares w's storage, a separate object
+def opt_fn(
+    fn: Callable,
+    xy: Tensor,
+    optimizer_class,
+    optimizer_hyperparams: dict,
+    n_iters: int = 100,
+) -> Tensor:
+    """Optimize a given function starting from the specified point.
 
-w.data = w.data - 1         # swaps in new storage
-print(w, alias)             # w is [0, 1], alias is still [1, 2]
+    optimizer_class: one of the optimizers you've defined, either SGD, RMSprop, Adam or AdamW
+    optimizer_hyperparams: keyword arguments passed to your optimiser (e.g. lr and weight_decay)
+    """
+    assert xy.requires_grad
 
-w = t.nn.Parameter(t.tensor([1.0, 2.0]))
-alias = w.detach()
-with t.no_grad():
-    w -= 1                  # overwrites the shared storage
-print(w, alias)             # both are [0, 1]
+    optimizer = optimizer_class([xy], **optimizer_hyperparams)
+
+    xy_list = [xy.detach().clone()]  # so that we don't unintentionally modify past values in `xy_list`
+
+    for i in range(n_iters):
+        fn(xy[0], xy[1]).backward()
+        optimizer.step()
+        optimizer.zero_grad()
+        xy_list.append(xy.detach().clone())
+
+    return t.stack(xy_list)
+
+
+points = []
+
+optimizer_list = [
+    (SGD, {"lr": 0.03, "momentum": 0.99}),
+    (RMSprop, {"lr": 0.05, "alpha": 0.99, "momentum": 0.8}),
+    (Adam, {"lr": 0.2, "betas": (0.99, 0.99), "weight_decay": 0.05}),
+    (AdamW, {"lr": 0.3, "betas": (0.99, 0.99), "weight_decay": 0.05}),
+]
+
+for optimizer_class, params in optimizer_list:
+    xy = t.tensor([2.5, 2.5], requires_grad=True)
+    xys = opt_fn(
+        pathological_curve_loss,
+        xy=xy,
+        optimizer_class=optimizer_class,
+        optimizer_hyperparams=params,
+    )
+    points.append((xys, optimizer_class, params))
+
+plot_fn_with_points(pathological_curve_loss, min_points=[(0, "y_min")], points=points)
+#plot_fn_with_points(pathological_curve_loss, min_points=[(0, "y_min")], points=points)
+
+# %%
+def bivariate_gaussian(x, y, x_mean=0.0, y_mean=0.0, x_sig=1.0, y_sig=1.0):
+    norm = 1 / (2 * np.pi * x_sig * y_sig)
+    x_exp = 0.5 * ((x - x_mean) ** 2) / (x_sig**2)
+    y_exp = 0.5 * ((y - y_mean) ** 2) / (y_sig**2)
+    return norm * t.exp(-x_exp - y_exp)
+
+
+means = [(1.0, -0.5), (-1.0, 0.5), (-0.5, -0.8)]
+
+def neg_trimodal_func(x, y):
+    """
+    This function has 3 global minima, at `means`. Unstable methods can overshoot these minima, and
+    non-adaptive methods can fail to converge to them in the first place given how shallow the
+    gradients are everywhere except in the close vicinity of the minima.
+    """
+    z = -bivariate_gaussian(x, y, x_mean=means[0][0], y_mean=means[0][1], x_sig=0.2, y_sig=0.2)
+    z -= bivariate_gaussian(x, y, x_mean=means[1][0], y_mean=means[1][1], x_sig=0.2, y_sig=0.2)
+    z -= bivariate_gaussian(x, y, x_mean=means[2][0], y_mean=means[2][1], x_sig=0.2, y_sig=0.2)
+    return z
+
+
+plot_fn(neg_trimodal_func, x_range=(-2, 2), y_range=(-2, 2), min_points=means)
+# %%
+for optimizer_class, params in optimizer_list:
+    xy = t.tensor([2.5, 2.5], requires_grad=True)
+    xys = opt_fn(
+        neg_trimodal_func,
+        xy=xy,
+        optimizer_class=optimizer_class,
+        optimizer_hyperparams=params,
+    )
+    points.append((xys, optimizer_class, params))
+
+plot_fn_with_points(neg_trimodal_func, min_points=means, points=points)
 # %%
