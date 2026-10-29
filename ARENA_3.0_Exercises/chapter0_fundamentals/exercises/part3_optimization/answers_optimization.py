@@ -377,3 +377,26 @@ for optimizer_class, params in optimizer_list:
 
 plot_fn_with_points(neg_trimodal_func, min_points=means, points=points)
 # %%
+temp = [t.tensor([1.20, 2.0])]
+if isinstance(temp, (list, tuple)):
+    params = [{"params": temp}]
+
+class hehe(t.nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.weight = t.nn.Parameter(t.rand(10))
+
+    def forward(self, x):
+        return self.weight *x
+
+temp = hehe()
+parameter = temp.parameters()
+params = None
+if not isinstance(parameter, (list, tuple)):
+    params = [{"params": parameter}]
+print(isinstance(temp, Iterable))
+print(not isinstance(temp, Iterable))
+print(not isinstance(temp, (list, tuple)))
+print(params)
+# %%
