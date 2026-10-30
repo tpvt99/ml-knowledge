@@ -377,10 +377,72 @@ for optimizer_class, params in optimizer_list:
 
 plot_fn_with_points(neg_trimodal_func, min_points=means, points=points)
 # %%
-temp = [t.tensor([1.20, 2.0])]
-if isinstance(temp, (list, tuple)):
-    params = [{"params": temp}]
+class SGD:
+    def __init__(self,
+                 params, **kwargs):
+        """
+        Implements SGD with momentum
 
+        Accepts parameters in groups, or an iterable
+
+        Like the Pytorch version, but assume nesterov=False, maximize=False, and dampening=0 
+        """
+        # Deal with case where we didn't supple groups, so we just make it into a single dictionary
+        if not isinstance(params, (list, tuple)):
+            params = [{"params": params}]
+
+        # Make sure each group["params"] is a list of params not a generator (so we don't iterate over and destroy it)
+        for p in params:
+            p["params"] = list(p["params"])
+
+        default_lr = 0.01 if ('lr' not in kwargs) else kwargs['lr']
+        default_mu = 0.0 if ('momentum' not in kwargs) else kwargs['momentum']
+        default_lmda = 0.0 if ('weight_decay' not in kwargs) else kwargs['weight_decay']
+
+        self.param_groups = []
+        for p in params:
+            if 'lr' not in p.keys():
+                p['lr'] = default_lr
+            if 'momentum' not in p.keys():
+                p['momentum'] = default_mu
+            if 'weight_decay' not in p.keys():
+                p['weight_decay'] = default_lmda
+
+            b = [t.zeros_like(param) for param in p['params']]
+            p['b'] = b
+
+            self.param_groups.append(p)
+
+    def zero_grad(self) -> None:
+        """Zeros all gradients of the parameters in `self.params`."""
+        for param in self.param_groups:
+            for p in param['params']:
+                p.grad = None
+
+    @t.inference_mode()
+    def step(self) -> None:
+        """Performs a single optimization step of the SGD algorithm"""
+        for p in self.param_groups:
+            param_list = p['params']
+            lr = p['lr']
+            mu = p['momentum']
+            lmda = p['weight_decay']
+            for param, b in zip(param_list, p['b']):
+                grad = param.grad
+
+                if lmda != 0:
+                    grad = grad + lmda * param 
+
+                if mu != 0:
+                    b.copy_(mu * b + grad)
+                    grad = b
+
+                param.add_(-lr * grad) 
+
+
+tests.test_sgd_param_groups(SGD)
+tests.test_step_doesnt_modify_grads(SGD, momentum=0.5)
+#%%
 class hehe(t.nn.Module):
     def __init__(self):
         super().__init__()
@@ -392,11 +454,24 @@ class hehe(t.nn.Module):
 
 temp = hehe()
 parameter = temp.parameters()
-params = None
-if not isinstance(parameter, (list, tuple)):
-    params = [{"params": parameter}]
-print(isinstance(temp, Iterable))
-print(not isinstance(temp, Iterable))
-print(not isinstance(temp, (list, tuple)))
-print(params)
+sgd = SGD(parameter)
+sgd.step()
+
 # %%
+def wao(params, **kwargs):
+    for param_group in params:
+        # Because we pass default -> kwargs -> param so the precedence is
+        # specified group > specified keyword > default value
+
+        # for this weight_decay 0.2 passed as param take precedence
+        #param_group = {"momentum": 0.0, "weight_decay": 0.0, **kwargs, **param_group}
+
+        # this weight_decay=0 take precedence even if we pass weight_decay=0.2
+        param_group = {"momentum": 0.0,  **kwargs, **param_group, "weight_decay": 0.0,}
+        print(param_group)
+
+wao([{"param": t.tensor([1.2]), "lr": 0.2, "momentum": 0.1},
+     {"param": t.tensor([1.2]) }],
+    lr= 0.3, momentum=0.9, weight_decay=0.2)
+# %%
+
