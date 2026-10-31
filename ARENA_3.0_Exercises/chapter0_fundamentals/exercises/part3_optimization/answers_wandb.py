@@ -10,6 +10,7 @@ import sys
 import torch as t
 from jaxtyping import Float, Int
 from torch import Tensor
+import wandb
 
 # Make sure exercises are in the path
 chapter = "chapter0_fundamentals"
@@ -23,6 +24,7 @@ if str(exercises_dir) not in sys.path:
 # Then we can import these 2 files
 from fundamentals_utils import CIFAR10, IMAGENET_TRANSFORM
 from part3_optimization.resnet34 import ResNet34, Linear
+from plotly_utils import bar, imshow, line
 
 #%%
 def get_resnet_for_feature_extraction(n_classes: int) -> ResNet34:
@@ -59,7 +61,7 @@ class ResNetFinetuningArgs:
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
 
-class ResNetFintuner:
+class ResNetFinetuner:
     def __init__(self, args: ResNetFinetuningArgs):
         self.args = args
 
@@ -72,7 +74,7 @@ class ResNetFintuner:
         )
 
         self.trainset = CIFAR10(train=True)
-        self.testset = CIFAR10(test=True)
+        self.testset = CIFAR10(train=False)
 
         self.train_loader = DataLoader(self.trainset, 
                                        batch_size=self.args.batch_size,
@@ -110,13 +112,16 @@ class ResNetFintuner:
         self.logged_variables['loss'].append(loss.item())
         self.examples_seen += imgs.shape[0]
 
+        return loss
+
     @t.inference_mode()
     def evaluate(self) -> float:
         """Evaluate the model on the test set and return the accuracy"""
         self.model.eval()
 
-        pbar = tqdm(self.test_loader)
+        pbar = tqdm(self.test_loader, desc="Evaluating")
         accuracy_sum = 0
+        total_samples = 0
         for imgs, labels in pbar:
             imgs = imgs.to(device)
             labels = labels.to(device)
@@ -126,24 +131,90 @@ class ResNetFintuner:
             logits = self.model(imgs)
             accuracy = (logits.argmax(-1) == labels).sum().item()
             accuracy_sum += accuracy
+            total_samples += imgs.shape[0]
 
-            pbar.set_postfix({})
+            pbar.set_postfix(accuracy=f"{accuracy/total_samples:.3f}",
+                             loss=f"{self.examples_seen:06}")
 
-        self.logged_variables['accuracy'].append(accuracy_sum / len(self.test_loader.dataset))
+        accuracy = accuracy_sum / len(self.test_loader.dataset)
+        self.logged_variables['accuracy'].append(accuracy)
+        assert len(self.test_loader.dataset) == total_samples
+
+        return accuracy
+
+    def train(self) -> dict[str, list[float]]:
+        self.pre_training_setup()
+
+        for epoch in range(self.args.epochs):
+            self.model.train()
+
+            pbar = tqdm(self.train_loader, desc="Training")
+            for imgs, labels in pbar:
+                loss = self.training_step(imgs, labels)
+
+                pbar.set_postfix(loss=f"{loss:.3f}",
+                                 ex_seen=f"{self.examples_seen:06}",
+                                 refresh=False)
+
+            accuracy = self.evaluate()
+            pbar.set_postfix(
+                loss=f"{loss:.3f}",
+                accuracy=f"{accuracy:.3f}",
+                ex_seen=f"{self.examples_seen:06}"
+            )
+
+        return self.logged_variables
 
 # %%
-x = t.rand(10,100,100)
-print(len(x))
+args = ResNetFinetuningArgs()
+trainer = ResNetFinetuner(args)
+logged_variables = trainer.train()
 # %%
-testset = CIFAR10(train=True)
-
-test_loader = DataLoader(testset,
-                                batch_size=256,
-                                shuffle=False)
+line(
+    y=[logged_variables["loss"][: 391 * 3 + 1], [0.1] + logged_variables["accuracy"][:4]],
+    x_max=len(logged_variables["loss"][: 391 * 3 + 1] * args.batch_size),
+    yaxis2_range=[0, 1],
+    use_secondary_yaxis=True,
+    labels={"x": "Examples seen", "y1": "Cross entropy loss", "y2": "Test Accuracy"},
+    title="Feature extraction with ResNet34",
+    width=800,
+)
 #%%
-pbar = tqdm(test_loader, "processing ")
-count = 1
-for item in pbar:
-    pbar.set_postfix({"count": count})
-    count+=1
+@dataclass
+class WandbResNetFinetuningArgs(ResNetFinetuningArgs):
+    """Contains new params for use in wandb.init, as well as all the ResNetFinetuningArgs params"""
+    wandb_project: str | None = "day3-resnet"
+    wandb_name: str | None = None
+    use_wandb: bool = False
+
+class WandbResNetFinetuner(ResNetFinetuner):
+    args: WandbResNetFinetuningArgs # adding this line helps with typechecker
+    examples_seen: int = 0
+
+    def pre_training_setup(self):
+        """Initializes the wandb run using `wandb.init` and `wandb.watch`"""
+        super().pre_training_setup()
+
+        wandb.init(entity = "hehe",
+                   project = self.args.wandb_project,
+                   config = self.args,
+                   name = self.args.wandb_name)
+
+        wandb.watch(models = self.model, log='all', log_freq=1000)
+
+    def training_step(
+            self,
+            imgs: Float[Tensor, "batch channels height width"],
+            labels: Int[Tensor, "batch"],
+    ) -> Float[Tensor, ""]:
+        """Perform a gradient update step on a single batch of data"""
+
+        loss = super().training_step(imgs, labels)
+
+        # Logging wandb
+        wandb.log(data=self.logged_variables, step=self.examples_seen)
+
+        return loss
+
+
 # %%

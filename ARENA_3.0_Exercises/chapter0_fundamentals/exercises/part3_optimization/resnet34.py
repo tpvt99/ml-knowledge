@@ -192,7 +192,8 @@ class Linear(nn.Module):
         x: shape (*, in_features) 
         Return: shape (*, out_features)
         """
-        out = einops.einsum(x, self.weight, "... in, out in -> ... out")
+        out = einops.einsum(x, self.weight, 
+                            "... in_feats, out_feats in_feats -> ... out_feats")
         if self.bias is not None:
             out = out + self.bias
         return out
