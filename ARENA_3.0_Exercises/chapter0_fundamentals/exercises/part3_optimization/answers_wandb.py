@@ -25,6 +25,7 @@ if str(exercises_dir) not in sys.path:
 from fundamentals_utils import CIFAR10, IMAGENET_TRANSFORM
 from part3_optimization.resnet34 import ResNet34, Linear
 from plotly_utils import bar, imshow, line
+from part3_optimization import tests
 
 #%%
 def get_resnet_for_feature_extraction(n_classes: int) -> ResNet34:
@@ -57,7 +58,7 @@ device = t.device("mps" if t.backends.mps.is_available() else "cuda" if t.cuda.i
 class ResNetFinetuningArgs:
     n_classes: int = 10
     batch_size: int = 128
-    epochs: int = 2
+    epochs: int = 3
     learning_rate: float = 1e-3
     weight_decay: float = 0.0
 
@@ -189,18 +190,19 @@ class WandbResNetFinetuningArgs(ResNetFinetuningArgs):
 
 class WandbResNetFinetuner(ResNetFinetuner):
     args: WandbResNetFinetuningArgs # adding this line helps with typechecker
-    examples_seen: int = 0
+    examples_seen: int # this should be separate from self.examples_seen as it should be step for wandb
 
     def pre_training_setup(self):
         """Initializes the wandb run using `wandb.init` and `wandb.watch`"""
         super().pre_training_setup()
 
-        wandb.init(entity = "hehe",
+        wandb.init(entity = "tpvt99", # entity seem must be your name
                    project = self.args.wandb_project,
                    config = self.args,
-                   name = self.args.wandb_name)
+                   name = self.args.wandb_name,
+                   mode='online' if self.args.use_wandb else 'disabled')
 
-        wandb.watch(models = self.model, log='all', log_freq=1000)
+        wandb.watch(models = self.model, log='all', log_freq=50)
 
     def training_step(
             self,
@@ -212,9 +214,121 @@ class WandbResNetFinetuner(ResNetFinetuner):
         loss = super().training_step(imgs, labels)
 
         # Logging wandb
-        wandb.log(data=self.logged_variables, step=self.examples_seen)
+        examples_seen = self.examples_seen
+        wandb.log(data={'loss': loss}, step=examples_seen)
 
         return loss
 
+    @t.inference_mode()
+    def evaluate(self) -> float:
+        "Equivalent to ResNetFinetuner.evaluate, but logging the accuracy to wandb"
+        self.model.eval()
+
+        pbar = tqdm(self.test_loader, desc="Evaluating")
+        accuracy_sum = 0
+        total_samples = 0
+        for imgs, labels in pbar:
+            imgs = imgs.to(device)
+            labels = labels.to(device)
+            imgs = IMAGENET_TRANSFORM(imgs)
+
+            # Output
+            logits = self.model(imgs)
+            accuracy = (logits.argmax(-1) == labels).sum().item()
+            accuracy_sum += accuracy
+            total_samples += imgs.shape[0]
+
+            pbar.set_postfix(accuracy=f"{accuracy_sum/total_samples:.3f}",
+                             ex_seen=f"{self.examples_seen:06}")
+
+        accuracy = accuracy_sum / len(self.test_loader.dataset)
+        self.logged_variables['accuracy'].append(accuracy)
+
+        wandb.log({'accuracy': accuracy}, step = self.examples_seen)
+
+        return accuracy
+
+    def train(self) -> None:
+        """Equivalent to ResNetFintuner.train but with wandb intergration"""
+        self.pre_training_setup()
+
+        for epoch in range(self.args.epochs):
+            self.model.train()
+
+            pbar = tqdm(self.train_loader, desc="Training")
+            for imgs, labels in pbar:
+                loss = self.training_step(imgs, labels)
+
+                pbar.set_postfix(loss=f"{loss:.3f}",
+                                 ex_seen=f"{self.examples_seen:06}",
+                                 refresh=False)
+
+            accuracy = self.evaluate()
+            #pbar.set_postfix(
+                #loss=f"{loss:.3f}",
+                #accuracy=f"{accuracy:.3f}",
+                #ex_seen=f"{self.examples_seen:06}"
+            #)
+        wandb.finish()
+
+        return self.logged_variables
+
+# %%
+args = WandbResNetFinetuningArgs(use_wandb=False)
+trainer = WandbResNetFinetuner(args)
+trainer.train()
+# %%
+sweep_config = dict(
+    method='random',
+    metric= {'name': 'accuracy', 'goal': 'maximize'},
+    parameters=dict(
+        learning_rate = dict(min=1e-4, max=1e-1, distribution='log_uniform_values'),
+        batch_size = dict(values = [32, 64, 128, 256]),
+        use_weight_decay = dict(values = [True, False], probabilities = [0.5, 0.5]),
+        weight_decay = dict(min=1e-4, max=1e-2, distribution='log_uniform_values')
+    )
+)
+
+def update_args(args: WandbResNetFinetuningArgs, sampled_parameters: dict) -> WandbResNetFinetuningArgs:
+    """
+    Returns a new args object with modified values. The dictionary `sampled_parameters` will have
+    the same keys as your `sweep_config["parameters"]` dict and values equal to the sampled
+    values of those hyperparameters
+    """
+    assert set(sampled_parameters.keys()) == set(sweep_config["parameters"].keys())
+
+    use_weight_decay = sampled_parameters['use_weight_decay']
+    for key, value in sampled_parameters.items():
+        if hasattr(args, key):
+            setattr(args, key, value)
+
+            if key == 'weight_decay' and (not use_weight_decay):
+                setattr(args, key, 0)
+
+    return args
+
+tests.test_sweep_config(sweep_config)
+tests.test_update_args(update_args, sweep_config)
+# %%
+def train():
+    # Define args and initialize wandb
+    args = WandbResNetFinetuningArgs(use_wandb=True)
+    # We put reinit = False here so that in .train() dont need redo .init()
+    wandb.init(project=args.wandb_project, name=args.wandb_name, reinit=False)
+
+    # After initializing wandb, we can update args using `wandb.config`
+    args = update_args(args, dict(wandb.config))
+
+    # Train the model with these new hyperparameters (the second wandb.init will be ignored)
+    trainer = WandbResNetFinetuner(args)
+    trainer.train()
+
+try:
+    # If you ignore project, it creates new project. it somehow does not care the .init in train() which i already add the project name
+    sweep_id = wandb.sweep(sweep=sweep_config, project='day3-resnet')
+    wandb.agent(sweep_id=sweep_id, function=train, count=3)
+finally:
+    wandb.teardown()
+    wandb.finish()
 
 # %%
